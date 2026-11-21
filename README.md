@@ -38,7 +38,7 @@ Trusted extension authors can instead call `createPiSitter({ verify, loadGates, 
 
 ## Read-only boundary
 
-The supervisor's separate Pi session starts with no built-in tools. It exposes snapshot inspection through an adapter-supplied broker and blocks tool calls that are absent from its explicit allowlist. Known command and mutation tool names are rejected even if accidentally listed. The default package grants no MCP inspection tools. The host-approved verification command runs against a read-only project mount and cannot use network access. The broker rejects path traversal and symlinks, caps input and output, and copies approved project evidence into a disposable snapshot.
+The supervisor's separate Pi session starts with no built-in tools. It exposes snapshot inspection through an adapter-supplied broker and blocks every other tool call. Direct MCP supervisor tools are disabled until a project adapter is independently qualified. The host-approved verification command runs against a read-only project mount and cannot use network access. The broker rejects path traversal and symlinks, caps input and output, and copies approved project evidence into a disposable snapshot.
 
 These boundaries protect against tool-level writes by the supervisor. A trusted adapter's own implementation and a trusted verifier's reported facts still require review. Pi Sitter does not prevent the worker from editing its own project. The extension itself runs with Pi's normal process permissions, as all Pi extensions do.
 
