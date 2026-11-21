@@ -1,0 +1,62 @@
+name: Pi Sitter developer runner and extension checks
+
+on:
+  push:
+    paths:
+      - '.github/workflows/runner-preflight.yml'
+      - '.npmrc'
+      - 'package.json'
+      - 'tsconfig.json'
+      - 'scripts/**'
+      - 'tests/runner/**'
+      - 'src/**'
+      - 'tests/*.test.mjs'
+      - 'docs/tasks/p1/**'
+  pull_request:
+    paths:
+      - '.github/workflows/runner-preflight.yml'
+      - '.npmrc'
+      - 'package.json'
+      - 'tsconfig.json'
+      - 'scripts/**'
+      - 'tests/runner/**'
+      - 'src/**'
+      - 'tests/*.test.mjs'
+      - 'docs/tasks/p1/**'
+
+permissions:
+  contents: read
+
+jobs:
+  runner-and-extension-preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Check original Dope runner scripts
+        run: |
+          node --check scripts/codex-phase-core.mjs
+          node --check scripts/codex-phase.mjs
+          node --check scripts/validate-codex-phase.mjs
+      - name: Ensure exact-runner lockfile constraint
+        run: |
+          test ! -e package-lock.json
+          test ! -d .codex-runs
+      - name: Install dependencies without root lockfile
+        run: npm install --ignore-scripts --no-package-lock
+      - name: Run original runner regressions and Pi Sitter compatibility tests
+        run: npm run test:runner
+      - name: Typecheck Pi Sitter extension
+        run: npm run check
+      - name: Install isolated verifier prerequisite
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y bubblewrap
+      - name: Run Pi Sitter runtime regression tests
+        run: npm test
+      - name: Check npm package contents without publishing
+        run: npm pack --dry-run
+      # Never run codex:phase in CI or auto-execute manual Pi/MCP qualification.
