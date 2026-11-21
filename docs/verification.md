@@ -1,0 +1,31 @@
+# Verification protocol
+
+A trusted runner writes a single `GateReport` JSON object to stdout. Pi Sitter passes the task label as `PI_SITTER_STAGE` and the project path as `PI_SITTER_PROJECT_ROOT`. The runner must use saved project evidence and give a separate result for each requirement. It should return `UNVERIFIED` when evidence is insufficient.
+
+```json
+{
+  "schemaVersion": 1,
+  "stage": "current",
+  "snapshotIdentity": "64-character SHA-256 of the inspected saved state",
+  "snapshotFiles": 3,
+  "source": "explicit",
+  "counts": { "PASS": 1, "FAIL": 0, "UNVERIFIED": 0 },
+  "gates": [{
+    "id": "BUILD",
+    "requirement": "The project builds",
+    "source": { "path": "task", "line": 1, "promptSha256": "source digest", "sourcePrompt": "Build the project" },
+    "method": { "kind": "command", "fact": "build" },
+    "fromStage": "current",
+    "result": "PASS",
+    "evidence": "Exact command result or saved-file evidence",
+    "explanation": ""
+  }],
+  "regressions": [],
+  "missingDeliverables": [],
+  "validationLimitations": []
+}
+```
+
+The runner should compute `snapshotIdentity` from the files it actually inspected. Pi Sitter rejects missing or malformed reports and never treats missing evidence as a pass. The host invokes the runner in a read-only, network-isolated `bubblewrap` process, using no shell. If a test framework requires writable caches, direct it to `/tmp` inside that process. Use an absolute executable path in `PI_SITTER_VERIFY_COMMAND`; arguments are literal strings. Do not source the command from the project under review.
+
+For adapters using `createPiSitter`, `verify(stage, projectRoot, { signal, previous, ctx })` returns the same report. The optional `EvidenceBroker` can provide immutable snapshots for further inspection. The adapter must restrict capabilities to safe reads; Pi Sitter's default policy does not grant arbitrary shell or editor tools.

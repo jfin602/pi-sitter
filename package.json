@@ -1,0 +1,36 @@
+{
+  "name": "pi-sitter",
+  "version": "0.1.0",
+  "description": "An on-demand AI supervisor for the Pi Coding Agent",
+  "type": "module",
+  "license": "MIT",
+  "author": "jfin602",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jfin602/pi-sitter.git"
+  },
+  "keywords": ["pi-package", "pi-extension", "pi-sitter", "coding-agent"],
+  "pi": { "extensions": ["./src/index.ts"] },
+  "exports": {
+    ".": "./src/index.ts",
+    "./broker": "./src/broker.ts",
+    "./gates": "./src/gates.ts",
+    "./supervisor-session": "./src/supervisor-session.ts"
+  },
+  "files": ["src", "docs", "README.md", "LICENSE"],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.5.2",
+    "@types/node": "^24.0.0",
+    "typebox": "^1.4.7",
+    "typescript": "^5.9.3"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs"
+  },
+  "engines": { "node": ">=22" }
+}
