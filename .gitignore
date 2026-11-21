@@ -4,3 +4,5 @@ coverage/
 dist/
 .pi/
 *.log
+
+.codex-runs/

@@ -14,7 +14,7 @@ pi install git:github.com/jfin602/pi-sitter
 
 After the package has been published to npm, install it with `pi install npm:pi-sitter`. The npm package is not published yet.
 
-For development, clone this repository, run `npm ci`, then load it for one Pi invocation with the installed Pi CLI's `-e /absolute/path/to/pi-sitter` option. The `pi.extensions` manifest points at `src/index.ts`. Pi loads TypeScript directly; there is no build artifact.
+For development, clone this repository, run `npm install --ignore-scripts --no-package-lock`, then load it for one Pi invocation with the installed Pi CLI's `-e /absolute/path/to/pi-sitter` option. The `pi.extensions` manifest points at `src/index.ts`. Pi loads TypeScript directly; there is no build artifact.
 
 ## Use in a coding project
 
@@ -45,10 +45,22 @@ These boundaries protect against tool-level writes by the supervisor. A trusted 
 ## Develop and check
 
 ```bash
-npm ci
+npm install --ignore-scripts --no-package-lock
 npm run check
 npm test
 npm pack --dry-run
 ```
 
 Tests use deterministic worker events, a non-Godot project, a real Pi package loader, and a sandboxed verifier. The package contains TypeScript source under `src/`, so the manifest and exports work from npm or Git installs.
+
+## Architecture and developer workflow
+
+The [documentation index](docs/README.md), [current implementation status](BOOT.md) and [owner-approved ADR](docs/decisions/0001-ten-approved-decisions.md) distinguish working 0.1.0 behavior from proposed 1.0 contracts. The existing triggers are intentionally preserved. Structured Vitest suite provenance, full worker MCP tool parity, and expanded requirement review are **not yet qualified**.
+
+The [Dope Codex phase runner](docs/runner.md) is a **developer-only** workflow. It is different from Pi Sitter's runtime approved test runner and is not published as part of the Pi extension. The root uses `.npmrc` to disable lockfiles because the original Dope runner rejects `package-lock.json`. Use Node 24 for runner tests. To check the runner:
+
+```bash
+npm run test:runner
+```
+
+P1 implementation prompt files are not yet authored; do not run the phase runner or treat this documentation application as authorization to publish 1.0.
