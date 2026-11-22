@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createPiSitter } from '../src/index.ts';
 import { decideCompletion, createRecoveryPlan } from '../src/completion.ts';
 import { createHash } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 
 function report(stage, snapshot, results, regressions = []) {
   const gates = results.map(([id, result, fact = 'main.script']) => ({ id, result, fromStage: stage,
@@ -14,9 +15,11 @@ function report(stage, snapshot, results, regressions = []) {
   const counts = { PASS: 0, FAIL: 0, UNVERIFIED: 0 };
   for (const gate of gates) counts[gate.result]++;
   return { schemaVersion: 2, taskId: 'task-04', stage,
+    runId: 'run-04',
     snapshotIdentity: snapshot === 'unavailable' || /^[a-f0-9]{64}$/.test(snapshot) ? snapshot : createHash('sha256').update(snapshot).digest('hex'),
     snapshotFiles: 7, source: 'reviewed', suite: { id: 'suite-04', version: 'v1', digest: 'f'.repeat(64) },
-    counts, gates: gates.map(gate => ({ ...gate, tests: [{ id: `scored-${gate.id}`, result: gate.result === 'UNVERIFIED' ? 'SKIP' : gate.result,
+    counts, testCounts: { executed: counts.PASS + counts.FAIL, skipped: counts.UNVERIFIED, passed: counts.PASS, failed: counts.FAIL },
+    execution: { exitCode: counts.FAIL > 0 ? 1 : 0 }, gates: gates.map(gate => ({ ...gate, tests: [{ id: `scored-${gate.id}`, result: gate.result === 'UNVERIFIED' ? 'SKIP' : gate.result,
       evidence: gate.evidence }] })), regressions,
     missingDeliverables: gates.filter(g => g.result === 'FAIL').map(g => g.id), validationLimitations: [] };
 }
@@ -57,8 +60,8 @@ function harness({ mode = 'active', reports = [], branch = [], analyze, shouldAn
     const value = await reports[Math.min(index++, reports.length - 1)];
     if (value instanceof Error) throw value;
     currentReport = value;
-    return { schemaVersion: 2, taskId: value.taskId, stage: value.stage,
-      snapshotIdentity: value.snapshotIdentity, suite: value.suite,
+    return { schemaVersion: 2, taskId: value.taskId, runId: randomUUID(), stage: value.stage,
+      snapshotIdentity: value.snapshotIdentity, suite: value.suite, testCounts: value.testCounts, execution: value.execution,
       gates: value.gates.map(gate => ({ id: gate.id, tests: gate.tests })) };
   }, loadControllerContext: controller, analyze, shouldAnalyze, evidenceBroker, completionReady })(pi);
   handlers.get('session_start')({}, ctx);

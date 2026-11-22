@@ -3,6 +3,7 @@ import type { EvaluatedGate, GateReport } from './gates.ts';
 export type CompletionDecision = 'VERIFIED' | 'RECOVERY_REQUIRED' | 'UNVERIFIED' | 'BLOCKED';
 export interface CompletionRecord {
   displayId?: string;
+  runId?: string;
   stage: string;
   task: string;
   decision: CompletionDecision;

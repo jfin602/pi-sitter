@@ -18,6 +18,7 @@ const SHA = /^[a-f0-9]{64}$/;
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const string = (value: unknown, max: number): value is string => typeof value === 'string' && value.length > 0 && value.length <= max;
 const id = (value: unknown): value is string => string(value, 128) && ID.test(value);
+const testId = (value: unknown): value is string => string(value, 512) && !/[\u0000-\u001f\u007f]/.test(value);
 const unique = (items: string[]): boolean => new Set(items).size === items.length;
 
 export function validateControllerContext(value: unknown, stage: string): ControllerContext {
@@ -43,7 +44,7 @@ export function validateControllerContext(value: unknown, stage: string): Contro
   for (const row of suite.gates) {
     if (!object(row) || !id(row.id) || !Array.isArray(row.requirementIds) || !Array.isArray(row.testIds) ||
         row.requirementIds.length < 1 || row.testIds.length < 1 || row.testIds.length > 256 ||
-        !row.requirementIds.every(id) || !row.testIds.every(id) || !unique(row.requirementIds) || !unique(row.testIds) ||
+        !row.requirementIds.every(id) || !row.testIds.every(testId) || !unique(row.requirementIds) || !unique(row.testIds) ||
         !row.requirementIds.every(item => requirements.some(req => req.id === item)))
       throw new Error('Invalid trusted gate or test inventory');
     totalTests += row.testIds.length;

@@ -5,7 +5,8 @@ import { piSitterLimits, type PiSitterLimits } from './config.ts';
 import { parseDiagnosis, runInference, type Diagnosis, type InferenceOutcome, type LoadedCheck } from './inference.ts';
 import { genericFallback, type FallbackProvider } from './fallback.ts';
 import { PiSitterView } from './view.ts';
-import { normalizeGateReport, type GateReport, type GateSet, type TrustedRunInput } from './gates.ts';
+import { normalizeGateReport, type GateReport, type GateSet } from './gates.ts';
+import { adaptVitestReport } from './vitest-report.ts';
 import { validateControllerContext, type ControllerContext } from './controller-context.ts';
 import { createRecoveryPlan, decideCompletion, noProgressRecoveryPrompt, type CompletionRecord, type RecoveryPlan } from './completion.ts';
 import { EvidenceBroker } from './broker.ts';
@@ -112,7 +113,7 @@ export interface PiSitterDependencies {
   diagnose?: Diagnoser;
   loadedCheck?: LoadedCheck;
   limits?: PiSitterLimits;
-  verify?: (stage: string, projectRoot: string, options: { signal?: AbortSignal; previous?: GateReport; ctx?: ExtensionContext }) => Promise<GateReport | TrustedRunInput>;
+  verify?: (stage: string, projectRoot: string, options: { signal?: AbortSignal; previous?: GateReport; ctx?: ExtensionContext }) => Promise<unknown>;
   loadGates?: (stage: string) => Promise<GateSet>;
   /** Called only by the embedding host. Never source this from worker text, tools, or loadGates. */
   loadControllerContext?: (stage: string, projectRoot: string) => ControllerContext | undefined;
@@ -368,12 +369,15 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
             JSON.stringify(currentContext.suite) !== JSON.stringify(authoritative.suite))
           throw new Error('Trusted controller task or suite changed during verification');
         controllerContext = currentContext;
-        const report = normalizeGateReport(raw, currentContext, lastReport);
+        const input = raw && typeof raw === 'object' && !Array.isArray(raw) && 'format' in raw && raw.format === 'vitest-json'
+          ? adaptVitestReport(raw, currentContext) : raw;
+        const report = normalizeGateReport(input, currentContext, lastReport);
         pi.appendEntry(VERIFICATION_TYPE, report);
         lastReport = report;
         const decision = decideCompletion(report);
         verificationElapsedMs = Math.round(performance.now() - verificationStartedAt);
-        const completion: CompletionRecord = { stage: report.stage, task: authoritative.originalTask.text, decision: decision.decision,
+        const completion: CompletionRecord = { stage: report.stage, task: authoritative.originalTask.text, runId: report.runId,
+          decision: decision.decision,
           snapshotIdentity: report.snapshotIdentity, counts: report.counts,
           failedGateIds: report.gates.filter(gate => gate.result === 'FAIL').map(gate => gate.id),
           unverifiedGateIds: report.gates.filter(gate => gate.result === 'UNVERIFIED').map(gate => gate.id),
@@ -748,8 +752,9 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           recoveryPlan = undefined;
         } else {
           try {
-            lastReport = normalizeGateReport({ schemaVersion: 2, taskId: lastReport.taskId, stage: lastReport.stage,
+            lastReport = normalizeGateReport({ schemaVersion: 2, taskId: lastReport.taskId, runId: lastReport.runId, stage: lastReport.stage,
               snapshotIdentity: lastReport.snapshotIdentity, suite: lastReport.suite,
+              testCounts: lastReport.testCounts, execution: { exitCode: lastReport.testCounts.failed > 0 ? 1 : 0 },
               gates: lastReport.gates.map(gate => ({ id: gate.id, tests: gate.tests })) }, controllerContext);
             if (lastCompletion) {
               const decision = decideCompletion(lastReport);

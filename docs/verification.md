@@ -1,5 +1,7 @@
 # Verification protocol
 
+**Historical v1 protocol.** Schema 1 reports remain renderable history and cannot authorize a current successful verification. P3 requires the controller-owned schema 2 identities, run ID, exact test counts and execution status described in [the gate report contract](contracts/gate-report.md). The configured verifier emits one machine-readable JSON object on stdout. A nonzero assertion exit can produce `FAIL` only when the structured report attributes the failure to mandatory tests; infrastructure failure, malformed output or identity drift blocks the run. The independent original-requirement audit remains pending.
+
 A trusted runner writes a single `GateReport` JSON object to stdout. Pi Sitter passes the task label as `PI_SITTER_STAGE` and the project path as `PI_SITTER_PROJECT_ROOT`. The runner must use saved project evidence and give a separate result for each requirement. It should return `UNVERIFIED` when evidence is insufficient.
 
 ```json

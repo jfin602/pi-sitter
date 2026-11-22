@@ -19,7 +19,12 @@ const context = () => ({ schemaVersion: 1, taskId: 'task-1', stage: '04',
 const row = (id, result = 'PASS') => ({ id, tests: [{ id: `scored-${id}`, result,
   evidence: result === 'SKIP' ? '' : `${id} assertion evidence` }] });
 const run = (gates = [row('A'), row('B')]) => ({ schemaVersion: 2, taskId: 'task-1', stage: '04',
-  snapshotIdentity: sha, suite: { id: 'suite-1', version: 'v1', digest: sha }, gates });
+  runId: 'run-1', snapshotIdentity: sha, suite: { id: 'suite-1', version: 'v1', digest: sha },
+  testCounts: { executed: gates.flatMap(g => g.tests).filter(t => t.result !== 'SKIP').length,
+    skipped: gates.flatMap(g => g.tests).filter(t => t.result === 'SKIP').length,
+    passed: gates.flatMap(g => g.tests).filter(t => t.result === 'PASS').length,
+    failed: gates.flatMap(g => g.tests).filter(t => t.result === 'FAIL').length },
+  execution: { exitCode: gates.some(g => g.tests.some(t => t.result === 'FAIL')) ? 1 : 0 }, gates });
 const clone = value => structuredClone(value);
 
 test('host context retains a requirement beyond character 700 while prompt input stays bounded', () => {
@@ -66,8 +71,14 @@ test('task, suite, source, duplicate, unknown and caller criteria changes fail c
   assert.throws(() => normalizeGateReport(missingTest, trusted), /missing expected test/);
   const oversized = run(); oversized.gates[0].tests[0].evidence = 'x'.repeat(1024 * 1024);
   assert.throws(() => normalizeGateReport(oversized, trusted), /oversized/);
+  assert.throws(() => normalizeGateReport(run(), trusted, normalizeGateReport(run(), trusted)), /stale run identity/);
+  const spoofed = run(); spoofed.testCounts.passed = 99;
+  assert.throws(() => normalizeGateReport(spoofed, trusted), /spoofed test counts/);
   assert.throws(() => validateControllerContext(context(), '05'), /task, stage/);
   assert.throws(() => validateControllerContext({ ...context(), originalTask: { ...context().originalTask, text: 'x'.repeat(65537) } }, '04'), /oversized/);
+});
+
+test('legacy v1 passing history cannot authorize current VERIFIED', () => {
   assert.equal(decideCompletion({ schemaVersion: 1, stage: '04', snapshotIdentity: sha,
     gates: [{ id: 'A', result: 'PASS' }], counts: { PASS: 1, FAIL: 0, UNVERIFIED: 0 } }).decision, 'UNVERIFIED');
 });
@@ -138,4 +149,13 @@ test('controller inventory drift during verification blocks the run', async () =
   await h.commands.get('sitter').handler('verify', h.ctx);
   assert.equal(h.entries.filter(entry => entry.customType === 'pi-sitter-verification').length, 0);
   assert.match(h.entries.filter(entry => entry.customType === 'pi-sitter-completion').at(-1).data.reason, /changed during verification/);
+});
+
+test('invalid injected report is blocked before persistence or recovery', async () => {
+  const invalid = run(); invalid.testCounts.passed = 99;
+  const h = extension([], () => context(), async () => invalid);
+  await h.commands.get('sitter').handler('verify', h.ctx);
+  assert.equal(h.entries.filter(entry => entry.customType === 'pi-sitter-verification').length, 0);
+  assert.equal(h.entries.filter(entry => entry.customType === 'pi-sitter-recovery').length, 0);
+  assert.equal(h.entries.filter(entry => entry.customType === 'pi-sitter-completion').at(-1).data.decision, 'BLOCKED');
 });
