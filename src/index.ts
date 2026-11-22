@@ -13,6 +13,8 @@ import { EvidenceBroker } from './broker.ts';
 import { modelAnalysisAsk, runInspectionAnalysis, type AnalysisOutcome } from './analysis.ts';
 import { buildPrompt, type PromptBuilder } from './prompt.ts';
 import { configuredVerifier } from './verifier.ts';
+import type { ApprovedVerifier } from './verifier.ts';
+import { checkpointContext, selectCheckpoint, type CheckpointRequest } from './checkpoints.ts';
 
 const STATUS_KEY = 'pi-sitter-status';
 const WIDGET_KEY = 'pi-sitter-panel';
@@ -24,6 +26,7 @@ const ADVISORY_TYPE = 'pi-sitter-advisory';
 const VERIFICATION_TYPE = 'pi-sitter-verification';
 const VERIFICATION_PENDING_TYPE = 'pi-sitter-verification-pending';
 const VERIFY_ATTEMPT_TYPE = 'pi-sitter-verification-attempt';
+const CHECKPOINT_TYPE = 'pi-sitter-checkpoint';
 const COMPLETION_TYPE = 'pi-sitter-completion';
 const RECOVERY_TYPE = 'pi-sitter-recovery';
 const RECOVERY_REQUEST_TYPE = 'pi-sitter-recovery-request';
@@ -113,10 +116,15 @@ export interface PiSitterDependencies {
   diagnose?: Diagnoser;
   loadedCheck?: LoadedCheck;
   limits?: PiSitterLimits;
-  verify?: (stage: string, projectRoot: string, options: { signal?: AbortSignal; previous?: GateReport; ctx?: ExtensionContext }) => Promise<unknown>;
+  verify?: (stage: string, projectRoot: string, options: { signal?: AbortSignal; previous?: GateReport;
+    ctx?: ExtensionContext; checkpoint?: import('./checkpoints.ts').CheckpointSelection }) => Promise<unknown>;
   loadGates?: (stage: string) => Promise<GateSet>;
   /** Called only by the embedding host. Never source this from worker text, tools, or loadGates. */
   loadControllerContext?: (stage: string, projectRoot: string) => ControllerContext | undefined;
+  /** Host-owned execution registry; the environment setting supplies only its identifier. */
+  resolveApprovedVerifier?: (id: string, checkpoint?: import('./checkpoints.ts').CheckpointSelection) => ApprovedVerifier | undefined;
+  /** Host-owned milestone signal. A missing signal uses final/post-repair settlement cadence. */
+  loadCheckpoint?: (stage: string, projectRoot: string) => CheckpointRequest | undefined;
   recoveryPlan?: typeof createRecoveryPlan;
   evidenceBroker?: (projectRoot: string) => EvidenceBroker;
   shouldAnalyze?: (report: GateReport) => boolean;
@@ -161,6 +169,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     let recoveryPlan: RecoveryPlan | undefined;
     let recoveryAttempts = 0;
     let verificationRuns = 0;
+    const completedCheckpoints = new Set<string>();
     const recoveryKeys = new Set<string>();
     let lastRecovery: RecoveryEntry | undefined;
     let recoveryTurnObserved = false;
@@ -326,9 +335,21 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       }
     }
 
-    async function verify(ctx: ExtensionContext): Promise<{ report?: GateReport; completion?: CompletionRecord }> {
+    async function verify(ctx: ExtensionContext, request: CheckpointRequest = { reason: 'manual', milestoneId: 'manual' }): Promise<{ report?: GateReport; completion?: CompletionRecord }> {
       if (verificationController) { ctx.ui.notify('Pi Sitter verification is already running', 'warning'); return {}; }
       if (!engine.stage) { ctx.ui.notify('Set a task stage before verification', 'warning'); return {}; }
+      if (request.reason === 'milestone') {
+        try {
+          const raw = dependencies.loadControllerContext?.(engine.stage, ctx.cwd);
+          if (raw) {
+            const authoritative = validateControllerContext(raw, engine.stage);
+            const selected = selectCheckpoint(authoritative, request, lastReport);
+            const key = [selected.taskId, selected.milestoneId, selected.snapshotId,
+              authoritative.suite.digest, selected.reason].join(':');
+            if (completedCheckpoints.has(key)) return {};
+          }
+        } catch { /* The normal verification path records BLOCKED. */ }
+      }
       if (verificationRuns >= limits.maxCompletionVerifications) {
         verificationActivity = 'Completion verification budget exhausted';
         ctx.ui.notify('Pi Sitter completion verification budget exhausted', 'warning');
@@ -350,6 +371,12 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         const suppliedAtStart = dependencies.loadControllerContext?.(engine.stage, ctx.cwd);
         if (!suppliedAtStart) throw new Error('Trusted controller task and protected suite are not configured');
         const authoritative = validateControllerContext(suppliedAtStart, engine.stage);
+        const checkpoint = selectCheckpoint(authoritative, request, lastReport);
+        const checkpointKey = [checkpoint.taskId, checkpoint.milestoneId, checkpoint.snapshotId,
+          authoritative.suite.digest, checkpoint.reason].join(':');
+        if (request.reason === 'milestone' && completedCheckpoints.has(checkpointKey)) return {};
+        if (request.reason === 'milestone') completedCheckpoints.add(checkpointKey);
+        pi.appendEntry(CHECKPOINT_TYPE, checkpoint);
         if (!controllerContext || JSON.stringify(controllerContext) !== JSON.stringify(authoritative)) {
           lastReport = undefined;
           lastCompletion = undefined;
@@ -357,9 +384,10 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         }
         controllerContext = authoritative;
         engine.setTask(authoritative.originalTask.text, authoritative.stage);
-        const run = dependencies.verify ?? configuredVerifier();
+        const run = dependencies.verify ?? configuredVerifier(undefined, dependencies.resolveApprovedVerifier);
         if (!run) throw new Error('No verification provider is configured for this project');
-        const raw = await run(engine.stage, ctx.cwd, { signal: current.signal, previous: lastReport, ctx });
+        const raw = await run(engine.stage, ctx.cwd, { signal: current.signal, previous: lastReport, ctx,
+          checkpoint });
         if (current.signal.aborted || engine.sessionId !== sessionId) return {};
         const suppliedAtEnd = dependencies.loadControllerContext?.(engine.stage, ctx.cwd);
         if (!suppliedAtEnd) throw new Error('Trusted controller task and protected suite are not configured');
@@ -369,9 +397,11 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
             JSON.stringify(currentContext.suite) !== JSON.stringify(authoritative.suite))
           throw new Error('Trusted controller task or suite changed during verification');
         controllerContext = currentContext;
+        const selectedContext = checkpointContext(currentContext, checkpoint);
         const input = raw && typeof raw === 'object' && !Array.isArray(raw) && 'format' in raw && raw.format === 'vitest-json'
-          ? adaptVitestReport(raw, currentContext) : raw;
-        const report = normalizeGateReport(input, currentContext, lastReport);
+          ? adaptVitestReport(raw, selectedContext) : raw;
+        const report = normalizeGateReport(input, selectedContext, lastReport);
+        report.checkpoint = { ...checkpoint, runId: report.runId };
         pi.appendEntry(VERIFICATION_TYPE, report);
         lastReport = report;
         const decision = decideCompletion(report);
@@ -646,6 +676,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         recoveryPlan = undefined;
         recoveryAttempts = 0;
         verificationRuns = 0;
+        completedCheckpoints.clear();
         recoveryKeys.clear();
         lastRecovery = undefined;
         recoveryTurnObserved = false;
@@ -961,8 +992,20 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     });
 
     pi.on('agent_before_settle', (event, ctx) => {
-      if (event.outcome === 'completed' && engine.mode !== 'off' && engine.stage && (dependencies.verify || process.env.PI_SITTER_VERIFY_COMMAND))
-        beginPendingVerification(ctx);
+      if (event.outcome !== 'completed' || engine.mode === 'off' || !engine.stage ||
+          !(dependencies.verify || process.env.PI_SITTER_VERIFY_COMMAND)) return;
+      try {
+        const request = dependencies.loadCheckpoint?.(engine.stage, ctx.cwd);
+        const raw = dependencies.loadControllerContext?.(engine.stage, ctx.cwd);
+        if (request?.reason === 'milestone' && raw) {
+          const authoritative = validateControllerContext(raw, engine.stage);
+          const selected = selectCheckpoint(authoritative, request, lastReport);
+          const key = [selected.taskId, selected.milestoneId, selected.snapshotId,
+            authoritative.suite.digest, selected.reason].join(':');
+          if (completedCheckpoints.has(key)) return;
+        }
+      } catch { /* Verification records the authoritative BLOCKED result. */ }
+      beginPendingVerification(ctx);
     });
 
     pi.on('agent_before_settle', async (event, ctx) => {
@@ -994,7 +1037,21 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         render(ctx);
         return;
       }
-      const { report, completion } = await verify(ctx);
+      let request: CheckpointRequest = { reason: 'final', milestoneId: 'final' };
+      try {
+        const supplied = dependencies.loadControllerContext?.(engine.stage, ctx.cwd);
+        const currentContext = supplied && validateControllerContext(supplied, engine.stage);
+        if (currentContext && lastReport?.schemaVersion === 2 && lastReport.taskId === currentContext.taskId &&
+            lastReport.suite.digest === currentContext.suite.digest &&
+            lastReport.gates.some(gate => gate.result === 'FAIL') &&
+            lastReport.snapshotIdentity !== currentContext.sourceSnapshot) {
+          request = { reason: 'post_repair', milestoneId: 'repair',
+            gateIds: lastReport.gates.filter(gate => gate.result === 'FAIL').map(gate => gate.id),
+            regressionGateIds: lastReport.gates.filter(gate => gate.result === 'PASS').map(gate => gate.id) };
+        }
+        request = dependencies.loadCheckpoint?.(engine.stage, ctx.cwd) ?? request;
+      } catch { /* verify records a BLOCKED result using the same trusted ingress. */ }
+      const { report, completion } = await verify(ctx, request);
       if (!report || !completion) return;
       if (report.snapshotIdentity !== 'unavailable' && dependencies.evidenceBroker &&
           dependencies.shouldAnalyze?.(report) && completionDiagnosisCalls < 1) {

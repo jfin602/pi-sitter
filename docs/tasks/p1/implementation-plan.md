@@ -1,6 +1,6 @@
 # /prompt-plan p1 — Source-grounded Pi Sitter implementation and qualification
 
-**Status (2026-11-21):** P1 and P2 committed; P3 automated checkpoint passes in a dirty `0.1.3` working tree pending the Dope runner's commit; P4–P9 not executed; P10 manual; 1.0 not qualified.
+**Status (2026-11-21):** P1–P3 committed; P4 automated checkpoint passes in a dirty `0.1.4` working tree pending the Dope runner's commit; P5–P9 not executed; P10 manual; 1.0 not qualified.
 **Basis:** [assessment](prompt-assessment.md), [gap audit](codebase-gap-audit.md), [Q1–Q10](../../decisions/0001-ten-approved-decisions.md).  
 **Version contract:** `pi-sitter@0.1.0` → P1–P9 runner-owned `0.1.1` through `0.1.9`; P10 is blocked manual `0.1.10` closeout. `1.0.0` requires a later independent release approval.
 

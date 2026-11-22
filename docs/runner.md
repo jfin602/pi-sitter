@@ -38,6 +38,6 @@ Each authored implementation prompt must state its exact target version, prior c
 
 Package baseline stays `0.1.0`. Historical `p1` phase grammar assigns P1 `0.1.1`, P2 `0.1.2`, etc. Each implementation prompt updates version metadata; the runner checks version/history then owns the commit. An independently authorized final manual P10 may use `0.1.10` only after observed native closeout; P1–P9 target `0.1.1` through `0.1.9`. **No `1.0.0` tagging or publishing by the phase runner.**
 
-**Current (2026-11-22):** P1 is committed as `016afdc`; P2 automated checks have recovered at uncommitted package `0.1.2`, pending the runner's checkpoint commit. P3–P9 remain unexecuted; P10 remains manual. The original Dope scripts and their byte-identity checks remain unchanged. See the [P2 recovery ledger](tasks/p1/qualification/P2-2026-11-21-not-green.md).
+**Current (2026-11-21):** P1–P3 are committed through `1ae5075`; P4 automated checks passed at uncommitted package `0.1.4`, pending the runner's checkpoint commit. P5–P9 remain unexecuted; P10 remains manual. The original Dope scripts and their byte-identity checks remain unchanged. See the [P4 automated ledger](tasks/p1/qualification/P4-2026-11-21-automated.md).
 
 See [the P1 task](tasks/p1/README.md), [workflow](workflow.md), and [qualification ledger](tasks/p1/qualification/README.md).

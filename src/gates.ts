@@ -1,5 +1,6 @@
 import type { ProbeFact, SnapshotResult } from './broker.ts';
 import type { ControllerContext } from './controller-context.ts';
+import type { CheckpointSelection } from './checkpoints.ts';
 
 export type GateResult = 'PASS' | 'FAIL' | 'UNVERIFIED';
 export interface Gate {
@@ -32,6 +33,7 @@ export interface TrustedGateReport extends Omit<LegacyGateReport, 'schemaVersion
   schemaVersion: 2;
   taskId: string;
   runId: string;
+  checkpoint?: CheckpointSelection;
   suite: { id: string; version: string; digest: string };
   testCounts: { executed: number; skipped: number; passed: number; failed: number };
   gates: Array<EvaluatedGate & { tests: TestObservation[] }>;

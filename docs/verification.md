@@ -28,6 +28,6 @@ A trusted runner writes a single `GateReport` JSON object to stdout. Pi Sitter p
 }
 ```
 
-The runner should compute `snapshotIdentity` from the files it actually inspected. Pi Sitter rejects missing or malformed reports and never treats missing evidence as a pass. The host invokes the runner in a read-only, network-isolated `bubblewrap` process, using no shell. If a test framework requires writable caches, direct it to `/tmp` inside that process. Use an absolute executable path in `PI_SITTER_VERIFY_COMMAND`; arguments are literal strings. Do not source the command from the project under review.
+The schema 1 example above is historical only. Current schema 2 verification requires the trusted controller inventory and [P4 host plan](contracts/verification-runner.md): PI_SITTER_VERIFY_COMMAND names an approved host plan, rather than containing executable arguments. The Linux adapter uses copied read-only source and suite views plus disposable scratch; missing isolation blocks verification.
 
 For adapters using `createPiSitter`, `verify(stage, projectRoot, { signal, previous, ctx })` returns the same report. The optional `EvidenceBroker` can provide immutable snapshots for further inspection. The adapter must restrict capabilities to safe reads; Pi Sitter's default policy does not grant arbitrary shell or editor tools.

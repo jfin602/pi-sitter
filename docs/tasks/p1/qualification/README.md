@@ -1,6 +1,6 @@
 # Pi Sitter P1 Qualification — Evidence Ledger
 
-**Status: P1 committed; P2 automated checkpoint recovered but uncommitted; full 1.0 qualification remains open.** Record each result with exact Git SHA/dirty source, runner/Pi/Node/Vitest versions, execution environment, exact command, expected observation, actual evidence and resulting status.
+**Status: P1–P3 committed; P4 automated checkpoint is dirty at 0.1.4; full 1.0 qualification remains open.** Record each result with exact Git SHA/dirty source, runner/Pi/Node/Vitest versions, execution environment, exact command, expected observation, actual evidence and resulting status.
 
 | Gate | Required demonstration | Initial |
 | --- | --- | --- |
@@ -36,7 +36,7 @@ Use `PASS`, `FAIL`, `NOT RUN`, `BLOCKED`, `EVIDENCE GAP`. A simulated tool respo
 
 ## Prompt-stack history
 
-P1 was committed by the Dope runner as `016afdc`. P2 has recovered automated evidence but awaits its runner-owned commit. P3–P9 remain unexecuted; P10 remains manual. The table above is the original full qualification matrix, not a claim that deterministic checkpoint tests alone close R01–R11.
+P1–P3 were committed by the Dope runner through `1ae5075`. [P4 automated evidence](P4-2026-11-21-automated.md) is in the dirty `0.1.4` tree awaiting its runner-owned commit. P5–P9 remain unexecuted; P10 remains manual. The table above is the original full qualification matrix, not a claim that deterministic checkpoint tests alone close R01–R11.
 
 ## P2 execution checkpoint
 
