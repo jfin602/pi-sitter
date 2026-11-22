@@ -1,0 +1,56 @@
+TASK: Phase 1 / P8 — Independently audit requirements and eliminate stale status or recovery
+
+MODEL / REASONING / USAGE
+- Recommended configuration: `GPT-6 Sol High`.
+- Browser required: no.
+
+VERSIONING
+- This prompt's assigned project version is `0.1.8`.
+
+TIER: T2 — Bounded source implementation and evidence
+STATE: AUTHORED ONLY / NOT EXECUTED
+AUDIT FINDINGS: A10 A11
+BASIS: Pi Sitter 0.1.0 source baseline d028500bc5d79638e9093d964e919d3a978f021f; do not assume HEAD remains identical after prior prompts.
+
+READ FIRST (bounded)
+- AGENTS.md; BOOT.md; MODULES.md.
+- docs/decisions/0001-ten-approved-decisions.md, docs/tasks/p1/codebase-gap-audit.md, docs/tasks/p1/implementation-plan.md and relevant contract(s).
+- Only the primary source/test files for this prompt, and actual installed Pi 1.5.2 declarations when an API change depends on them. Do not load unrelated project docs or llm-zone private data.
+- Inspect real Git HEAD, dirty owner work, existing tests and prompt checkpoint history first; stop rather than overwrite unexpected state.
+
+NON-NEGOTIABLE BOUNDARIES
+- Pi Sitter remains standalone and general purpose: no llm-zone/Godot/benchmark test dependency in runtime.
+- Preserve existing T1–T4 triggers, thresholds, budgets, Off/Shadow/Active behavior, cancellations, worker advisory timing and quiet on-demand inference.
+- The worker edits implementation; supervisor diagnoses via host-enforced read-only operations. Controller owns scored acceptance tests and formal task outcome.
+- Strict machine-readable gate evidence, not a model assertion, determines acceptance test PASS. Missing/stale/blocked evidence cannot become verified.
+- Original Dope developer runner scripts must remain byte-identical. Do not run another implementation prompt or self-commit; runner alone owns Git checkpoint/commit.
+- No root package-lock.json, no dependency churn unrelated to task, no unapproved npm publish, tag or jump to 1.0.0.
+
+PRIMARY FILES
+- src/completion.ts, src/index.ts, src/view.ts, task/manifest types and tests/completion.test.mjs plus replay/session tests. Update docs/contracts/completion.md and evidence ledger only as supported.
+- Depend on preserved full original requirements from P2, strict gate report P3, checkpoint/run identity P4 and recovery package P7.
+
+IMPLEMENT
+1. For every authoritative original requirement ID, produce independently sourced VERIFIED, FAILED or UNVERIFIED with source-linked evidence and stated limitations; the review is not a rewrite of acceptance test results. Controller retains formal task/benchmark score and final signoff.
+2. The current completed-state decision is allowed VERIFIED only if *all* expected protected gates pass on the relevant source and all mandatory original requirements have independent VERIFIED findings. A passing export test with uninspected accessibility must be UNVERIFIED; absent/incorrect suite remains BLOCKED, not a success.
+3. Bind report, decision, replay, status, retries and recovery to task + milestone/stage + source snapshot + suite identity + run ID. Reset or archive old state when a different task/suite/attempt starts; history can be viewed only with explicit historical labeling.
+4. Remove duplicate UI inference of VERIFIED from report counts. Have all cards, /sitter report, transcript restore and recovery eligibility read the same validated current decision and provenance. Avoid rendering a previous report as current after a blocked rerun.
+5. Honor Off/Shadow/Active, cancellation, manual verify, persisted recovery attempts and natural-turn delivery. An old session v1 record remains visible as historical/unverified, not promoted to fresh success.
+6. Support partially evidenced or genuinely broken requirements without accepting model-provided 'all done' prose; expose concise requirement-level reasons and trusted sources.
+
+FOCUSED PROOF
+- Reported A-only green for A+B mandatory cannot be VERIFIED; all-green export with uninspected accessibility stays UNVERIFIED; missing source/run is BLOCKED.
+- Full requirement beyond 700 chars survives new session/replay, same stage different task, same source new suite, blocked rerun, duplicate run IDs and old v1 migration.
+- No obsolete repair injection; renderer, /sitter report and completion agree on current attempt; run focused and full existing tests plus npm run check.
+
+EXIT / STOP
+Any false-positive VERIFIED or obsolete recovery for a later attempt is a hard blocker, even if ordinary tests pass.
+
+DOPE RUNNER VERSION / CHECKPOINT CONTRACT
+- Run focused regression tests first; record real commands/results. Only after all required automated checks are GREEN, update package.json version to `0.1.8`. Do not claim manual/native or formal release gates from simulation.
+- The exact unchanged Dope runner verifies the updated `0.1.8` and owns the version-named Git commit. Do not invoke git commit, move HEAD or modify P1–P10 authored prompt texts during execution.
+- Preserve .npmrc package-lock=false; do not add package-lock.json. Respect current package exports and pi.extensions path.
+- If any mandatory test or safety check fails, DO NOT advance version merely to force a runner commit. Leave evidence of NOT GREEN/BLOCKED and stop the sequence. Existing passing behavior must be covered by regressions.
+
+REPORT / HANDOFF
+- Report files changed, source revision or dirty basis, focused tests and outcomes, evidence gaps, known regressions, and precisely what P9 receives. Append bounded qualification evidence to docs/tasks/p1/qualification/ without rewriting old failures. Do not assert Phase 1 GREEN or publish.

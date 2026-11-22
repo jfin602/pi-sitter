@@ -13,7 +13,7 @@
 | P5 — Integrated qualification | Multiple unrelated fixtures incl. non-Godot; existing trigger regression and package/loader checks | Exact source-bound headless + real Pi evidence matrix |
 | P6 — Owner manual closeout | Real installed Pi session / MCP / release evidence review | Owner explicitly approves or holds 1.0.0 release |
 
-P1–P6 are **planned scopes** and do not yet constitute executable prompt files. See [docs/tasks/p1/README.md](docs/tasks/p1/README.md).
+F0-R/P1–P6 are conceptual workstreams, now mapped to **P1–P9 authored implementation prompt files and a P10 manual closeout**; the prompt files have **not** been executed. See [docs/tasks/p1/README.md](docs/tasks/p1/README.md).
 
 The unmodified Dope runner's historical `p1` sequence would use intermediate `0.1.1` through `0.1.N` checkpoints from the current `0.1.0` baseline. **`1.0.0` is reserved for independently qualified owner-approved publication**; no version bump is authorized by docs-apply.
 

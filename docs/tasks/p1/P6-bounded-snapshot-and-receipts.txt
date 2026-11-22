@@ -1,0 +1,55 @@
+TASK: Phase 1 / P6 — Bind research snapshots and tool receipts to trustworthy evidence
+
+MODEL / REASONING / USAGE
+- Recommended configuration: `GPT-6 Sol Medium`.
+- Browser required: no.
+
+VERSIONING
+- This prompt's assigned project version is `0.1.6`.
+
+TIER: T1 — Bounded source implementation and evidence
+STATE: AUTHORED ONLY / NOT EXECUTED
+AUDIT FINDINGS: A08
+BASIS: Pi Sitter 0.1.0 source baseline d028500bc5d79638e9093d964e919d3a978f021f; do not assume HEAD remains identical after prior prompts.
+
+READ FIRST (bounded)
+- AGENTS.md; BOOT.md; MODULES.md.
+- docs/decisions/0001-ten-approved-decisions.md, docs/tasks/p1/codebase-gap-audit.md, docs/tasks/p1/implementation-plan.md and relevant contract(s).
+- Only the primary source/test files for this prompt, and actual installed Pi 1.5.2 declarations when an API change depends on them. Do not load unrelated project docs or llm-zone private data.
+- Inspect real Git HEAD, dirty owner work, existing tests and prompt checkpoint history first; stop rather than overwrite unexpected state.
+
+NON-NEGOTIABLE BOUNDARIES
+- Pi Sitter remains standalone and general purpose: no llm-zone/Godot/benchmark test dependency in runtime.
+- Preserve existing T1–T4 triggers, thresholds, budgets, Off/Shadow/Active behavior, cancellations, worker advisory timing and quiet on-demand inference.
+- The worker edits implementation; supervisor diagnoses via host-enforced read-only operations. Controller owns scored acceptance tests and formal task outcome.
+- Strict machine-readable gate evidence, not a model assertion, determines acceptance test PASS. Missing/stale/blocked evidence cannot become verified.
+- Original Dope developer runner scripts must remain byte-identical. Do not run another implementation prompt or self-commit; runner alone owns Git checkpoint/commit.
+- No root package-lock.json, no dependency churn unrelated to task, no unapproved npm publish, tag or jump to 1.0.0.
+
+PRIMARY FILES
+- src/broker.ts, src/supervisor-session.ts, src/analysis.ts, focused evidence safety tests and docs/contracts/supervisor-tools.md.
+- Depend on P5 read-only dispatcher; no new mutation capabilities.
+
+IMPLEMENT
+1. Audit existing broker root-path checks, link rejection, cap on file count/bytes and digest comparison. Apply time and byte bounds during the **capture loop**, not only after reading, and verify copied bytes and hash match the source snapshot identity.
+2. Require explicit provider resource scopes, canonical path resolution, operation- and argument-bound read authorization and size-limited output; reject provider scopes outside current task/gate, alias escape or missing provenance.
+3. Attach each successful/denied inspection receipt to task ID, turn ID, tool source+operation, normalized arguments digest, snapshot/source identity, timestamp and bounded result/evidence reference. Do not claim generic text or error metadata demonstrates a source fact.
+4. Handle cancellation, partial captures, provider crashes and timeouts without orphaned temp directories, leaked secrets or uncontrolled reads. Never retry indefinitely because model repeated the same inspection.
+5. Keep static supported file types/languages framework-neutral and all accepted inspection tool behavior compatible with P5 and old tests. Provide an explicit ‘evidence gap’ when newer sources make an old snapshot stale.
+
+FOCUSED PROOF
+- Symlink/traversal and out-of-root paths refused; captured bytes/hash not silently stale; read quota enforced while copying; no discarded/canceled snapshot referenced as evidence.
+- Provider error, denied nested read, output flood and very long file returns cannot authorize a diagnosis.
+- Rerun existing TS/Rust/Python provider tests, focused receipt tests, npm run check; record timings and resource limits.
+
+EXIT / STOP
+Do not widen read scope or allow writes to repair a failing inspection fixture. Report any unresolved provider capability gap truthfully.
+
+DOPE RUNNER VERSION / CHECKPOINT CONTRACT
+- Run focused regression tests first; record real commands/results. Only after all required automated checks are GREEN, update package.json version to `0.1.6`. Do not claim manual/native or formal release gates from simulation.
+- The exact unchanged Dope runner verifies the updated `0.1.6` and owns the version-named Git commit. Do not invoke git commit, move HEAD or modify P1–P10 authored prompt texts during execution.
+- Preserve .npmrc package-lock=false; do not add package-lock.json. Respect current package exports and pi.extensions path.
+- If any mandatory test or safety check fails, DO NOT advance version merely to force a runner commit. Leave evidence of NOT GREEN/BLOCKED and stop the sequence. Existing passing behavior must be covered by regressions.
+
+REPORT / HANDOFF
+- Report files changed, source revision or dirty basis, focused tests and outcomes, evidence gaps, known regressions, and precisely what P7 receives. Append bounded qualification evidence to docs/tasks/p1/qualification/ without rewriting old failures. Do not assert Phase 1 GREEN or publish.

@@ -1,0 +1,56 @@
+TASK: Phase 1 / P4 — Harden verifier isolation and checkpoint-specific test cadence
+
+MODEL / REASONING / USAGE
+- Recommended configuration: `GPT-6 Sol High`.
+- Browser required: no.
+
+VERSIONING
+- This prompt's assigned project version is `0.1.4`.
+
+TIER: T2 — Bounded source implementation and evidence
+STATE: AUTHORED ONLY / NOT EXECUTED
+AUDIT FINDINGS: A05 A06
+BASIS: Pi Sitter 0.1.0 source baseline d028500bc5d79638e9093d964e919d3a978f021f; do not assume HEAD remains identical after prior prompts.
+
+READ FIRST (bounded)
+- AGENTS.md; BOOT.md; MODULES.md.
+- docs/decisions/0001-ten-approved-decisions.md, docs/tasks/p1/codebase-gap-audit.md, docs/tasks/p1/implementation-plan.md and relevant contract(s).
+- Only the primary source/test files for this prompt, and actual installed Pi 1.5.2 declarations when an API change depends on them. Do not load unrelated project docs or llm-zone private data.
+- Inspect real Git HEAD, dirty owner work, existing tests and prompt checkpoint history first; stop rather than overwrite unexpected state.
+
+NON-NEGOTIABLE BOUNDARIES
+- Pi Sitter remains standalone and general purpose: no llm-zone/Godot/benchmark test dependency in runtime.
+- Preserve existing T1–T4 triggers, thresholds, budgets, Off/Shadow/Active behavior, cancellations, worker advisory timing and quiet on-demand inference.
+- The worker edits implementation; supervisor diagnoses via host-enforced read-only operations. Controller owns scored acceptance tests and formal task outcome.
+- Strict machine-readable gate evidence, not a model assertion, determines acceptance test PASS. Missing/stale/blocked evidence cannot become verified.
+- Original Dope developer runner scripts must remain byte-identical. Do not run another implementation prompt or self-commit; runner alone owns Git checkpoint/commit.
+- No root package-lock.json, no dependency churn unrelated to task, no unapproved npm publish, tag or jump to 1.0.0.
+
+PRIMARY FILES
+- src/verifier.ts, src/index.ts, trusted runner adapter, tests/verifier.test.mjs and new focused checkpoint/sandbox tests; docs/contracts/verification-runner.md.
+- Use the validated report path built in P3; do not change original T1–T4 trigger semantics.
+
+IMPLEMENT
+1. Resolve an approved test run by trusted gate/suite identifier with controller-chosen absolute executable, literal args and environment; Pi Sitter requests only permitted reruns. Never execute model-selected shell fragments or project-provided commands.
+2. Remove the current bwrap whole-host read-only bind of '/' and execution in mutable live project as an authority assumption. Create a least-privilege isolated source view with only required runtime, protected suite and executable paths; allow writable disposable scratch/cache/artifact locations, protect original source and acceptance tests, block host-secrets and network access except explicitly approved needs.
+3. Bound wall-clock, CPU, memory, file size/count, stdout/stderr, child processes and concurrent attempts; implement cancellation and guaranteed scratch/process cleanup even after failure. Unavailable sandbox cannot silently downgrade to unsandboxed test execution; record BLOCKED.
+4. Introduce trusted verification reason milestone/final/post_repair/manual and separate task ID, milestone, snapshot, suite and run IDs. On milestone completion run relevant approved subset exactly once; final covers mandatory tests; post-repair checks affected gates plus required regressions on the new source. Ordinary source edits do not run acceptance tests.
+5. Keep existing non-test triggers, old manual verify command, Shadow behavior, recovery budgets and advisory turn timing intact. Where adapter cannot support a project, report BLOCKED with reason rather than assuming a pass.
+6. Preserve runner-platform portability and document Linux bubblewrap requirements and unsupported platforms as explicit evidence gaps.
+
+FOCUSED PROOF
+- Deny source/suite writes, host secret reads, command injection and path/symlink traversal; permit scratch writes; kill process trees on timeout/cancel; network denied where required.
+- Verify correct milestone subset, final full coverage, post-repair fresh source and no per-edit verification.
+- Separate assertion failure from sandbox infrastructure failure; run focused verifier integration, npm run check and existing lifecycle regressions.
+
+EXIT / STOP
+Any discovered sandbox escape, hidden host-data mount or untrusted command execution is NOT GREEN. Preserve test integrity, do not disable isolation to satisfy a test.
+
+DOPE RUNNER VERSION / CHECKPOINT CONTRACT
+- Run focused regression tests first; record real commands/results. Only after all required automated checks are GREEN, update package.json version to `0.1.4`. Do not claim manual/native or formal release gates from simulation.
+- The exact unchanged Dope runner verifies the updated `0.1.4` and owns the version-named Git commit. Do not invoke git commit, move HEAD or modify P1–P10 authored prompt texts during execution.
+- Preserve .npmrc package-lock=false; do not add package-lock.json. Respect current package exports and pi.extensions path.
+- If any mandatory test or safety check fails, DO NOT advance version merely to force a runner commit. Leave evidence of NOT GREEN/BLOCKED and stop the sequence. Existing passing behavior must be covered by regressions.
+
+REPORT / HANDOFF
+- Report files changed, source revision or dirty basis, focused tests and outcomes, evidence gaps, known regressions, and precisely what P5 receives. Append bounded qualification evidence to docs/tasks/p1/qualification/ without rewriting old failures. Do not assert Phase 1 GREEN or publish.

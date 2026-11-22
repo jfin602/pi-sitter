@@ -1,35 +1,46 @@
-# Pi Sitter 1.0 — Source-anchored implementation sequence
+# /prompt-plan p1 — Source-grounded Pi Sitter implementation and qualification
 
-**Status:** DOCUMENTATION PLAN APPLIED / IMPLEMENTATION PROMPTS NOT AUTHORED / CODE NOT CHANGED / QUALIFICATION NOT GREEN.  
-**Source:** `feea1c18e74d09d5db64155268eb7d75a6198dda`. [Audit A01–A12](codebase-gap-audit.md) · [owner Q1–Q10](../../decisions/0001-ten-approved-decisions.md) · [review #3](https://github.com/jfin602/pi-sitter/issues/3). Refresh source HEAD before implementation.
+**Status:** AUTHORED / PROMPTS NOT EXECUTED / 1.0 NOT QUALIFIED.  
+**Basis:** [assessment](prompt-assessment.md), [gap audit](codebase-gap-audit.md), [Q1–Q10](../../decisions/0001-ten-approved-decisions.md).  
+**Version contract:** `pi-sitter@0.1.0` → P1–P9 runner-owned `0.1.1` through `0.1.9`; P10 is blocked manual `0.1.10` closeout. `1.0.0` requires a later independent release approval.
 
-## Dependency ordering
+## Dependency order (the nine bounded implementation prompts)
 
-| Phase | Findings | Work and proof to finish before proceeding |
-| --- | --- | --- |
-| **F0-R (prerequisite)** | **A01, A02** | Replace foundation-only live-project version/no-prompt assertions while preserving the original Dope scripts and synthetic 0.1.0 fixture. Capture golden pre-/at-/post-threshold T1–T4 and Off/Shadow/Active behaviors. No trigger semantics change; stop if regression |
-| **P1 (gate contract)** | **A03, A04, early A10 sentinel** | Trusted controller supplies durable full requirement inventory, protected required test/gate manifest, source + suite identity. Both injected and subprocess reports use strict generic normalization. Real Vitest attributable nonzero test failures are FAIL; infrastructure errors BLOCKED. Omitted mandatory gate or uninspected accessibility cannot be VERIFIED |
-| **P2 (sandbox/cadence)** | **A05, A06** | Least-privilege runtime mounts, disposable scratch, resource/process caps, no shell; milestone/final/post-repair/manual reasons with exact task/source/suite/run identities. No acceptance run after every ordinary edit |
-| **P3 (research safety)** | **A07, A08** | Worker-equivalent vetted read MCPs, per-operation/args/resource host authorization incl. nested/deferred paths; capture and receipt provenance, output/time/byte caps. Unknown/mutating capability denied; restricted broker fallback remains |
-| **P4 (advice/completion/UI)** | **A09, A10, A11** | Evidence-linked failure-specific repair with abstention for unsupported causes; independent VERIFIED/FAILED/UNVERIFIED requirement coverage; UI, status, replay, retry and repair tied to same current attempt; reject stale evidence |
-| **P5/P6 (qualification)** | **A12** | Pack/install actual npm tarball in unrelated projects including non-Godot; end-to-end worker→failure→Sitter diagnosis→worker repair→rerun→requirements review; real Pi/MCP manual approval and source-bound R01–R11 evidence |
+**P1 — F0-R: CI transition + trigger preservation (T1).** Update only `tests/runner/pi-sitter-runner-compat.test.mjs` and trigger fixtures. Keep three Dope SHA identity checks and synthetic initial 0.1.0 fixture; make live package/stack tests dynamically validate legitimate checkpoints and the P10 browser-required interlock. Characterize T1 two equivalent failures, T2 setup/discovery counts, T3 configured final validator, T4 no-progress/inspection. Preserve Off/Shadow/Active, cancellation/resume/dedup. No trigger change or 16/32 budget fix.
 
-## Implementation ownership and boundaries
+**P2 — Trusted task and manifest (T1).** Introduce host-owned immutable task/required requirement IDs, versioned suite digest, required gate/test IDs and source identity. Preserve full original task beyond 700 chars across task and session lifecycle while bounding only model-facing prompts. The worker may author dev tests but cannot rewrite scored suite. Disallow omitted gate to pass; historical v1 only historical. Final external public wire API remains for review.
 
-- `src/core.ts` and `src/config.ts`: task capture + **unchanged existing triggers**. A default advisory budget of 16, up-to-32 config and 16-entry history discrepancy is a **policy hold**, not an automatic fix.
-- `src/gates.ts`, `src/verifier.ts`, `src/index.ts`: suite authority, strict verified run facts, isolation, checkpoint identity and consistent current report. Current v1 schema is historical under a future vNext API, not automatically a valid PASS.
-- `src/broker.ts` and `src/supervisor-session.ts`: read-only MCP filtering and bounded evidence. Pi SDK tool hints are **untrusted labels**, not permissions; direct MCP tools remain disabled until qualified.
-- `src/analysis.ts`, `src/prompt.ts`, `src/completion.ts`: task-scoped research, causal structured recovery and independent requirements audit. Worker owns edits; external controller owns formal gate/scoring outcome.
-- `tests/runner/pi-sitter-runner-compat.test.mjs`: revise only transient compatibility assumptions. Canonical Dope runner scripts stay byte-identical. Runtime tests remain `node:test`; Vitest is an external acceptance provider through a generic adapter.
+**P3 — Unified Vitest-first report path (T1).** Strict generic validator for both injected and subprocess reports before recording, completion and UI. Parse structured Vitest outcomes including normal nonzero assertion exits, counts, IDs and locations; do not confuse assertion FAIL with crash/timeout BLOCKED. Enforce suite/source/run completeness, skipped/duplicates/malformed negative tests. Enforce early A10 false-success sentinel; P8 owns complete independent requirement review.
 
-## Stop/hold and recovery rules
+**P4 — Constrained execution and cadence (T2).** Replace host-wide read bind with least-privilege protected suite/source/runtime mounts, disposable scratch, resource limits and cleanup. Trusted checkpoint reason milestone/final/post_repair/manual, correct subset coverage, fresh source, no every-edit checks. Missing isolation blocks; preserve existing worker triggers.
 
-Stop on: (1) trigger behavior change without separate owner approval, (2) a false VERIFIED from sparse/old evidence, (3) missing protected suite authority, (4) an unclassified MCP mutator or unavailable sandbox, (5) any attempt to alter acceptance criteria, (6) stale report/replay/repair after a blocked rerun, (7) missing source-bound or manual native evidence.
+**P5 — Real safe MCP discovery (T2).** Inspect pinned Pi 1.5.2 host/MCP API, connect to worker's configured services but expose only verified host-approved read operations. Deny arbitrary shell, mutation, nested and deferred/codemode paths; readOnlyHint alone proves nothing. Preserve independent supervisor session and snapshot-only fallback; prove actual read parity with safe fake MCP.
 
-For a non-GREEN phase, preserve the original failing record and append a focused correction prompt/recheck; do not rewrite historical qualification or skip phases.
+**P6 — Evidence custody (T1).** Bound capture-time work, source-copy digest, provider result sizes and receipt IDs. Ensure a denied/out-of-scope/stale call cannot become evidence; preserve TS/Rust/Python generic coverage. No write path.
 
-**Additional design review before coding:** exact trusted task/manifest ingress, final vNext wire fields and legacy v1 read-only behavior; advisory budget cap; new provider tool-receipt semantics. The ten approved owner architecture decisions remain unchanged.
+**P7 — Structured causal recovery (T1).** Require evidence from failed assertion or current approved inspection, uncertainty/confidence, affected files/functions, ordered repair steps and approved rerun request. Unsupported root causes abstain; worker executes and Sitter becomes idle.
 
-**Versioning and runner:** first valid developer checkpoint originates at `0.1.0` and continues as runner-owned `0.1.x` patches. P1 implementation prompts `P1-*.txt` to manual closeout **do not yet exist**, have not been executed, and are not authorized by this docs application. `1.0.0` remains independent owner-qualified release.
+**P8 — Requirement-level review and replay (T2).** Independently score every original authored requirement as VERIFIED/FAILED/UNVERIFIED with supporting current-source evidence. Combine complete accepted gate manifest with requirement coverage to determine current advisory completion. All reports/cards/replay/recovery use the same task+milestone+source+suite+run; blocked rerun cannot show stale success; old v1 labeled history.
 
-[Qualification evidence and unrun cases](qualification/README.md).
+**P9 — Headless integration, packaging and owner handoff (T2).** Actually install packed extension into two unrelated project fixtures incl. non-Godot; simulate deterministic failure→research→worker repair→approved rerun→requirement coverage; real negative MCP and sandbox cases; full typecheck/test/runner/pack and source-bound qualification ledger. Explicitly mark live model/MCP/manual NOT RUN.
+
+## P10 — Independent manual Pi/MCP closeout (T3)
+
+Owner starts this separately in a real installed Pi session after inspecting P9 evidence. Test actual model sessions, on-demand triggers, safe MCP read parity, blocked mutation and nested calls, protected Vitest gates, recovery, task requirement truth, stale replay and install cleanup in controlled projects. Record exact environment, source, commands, artifacts and R01–R11 status; owner decides ACCEPT/HOLD. `Browser required: yes.` is a deliberate runner interlock; **do not** auto-run P10, including with --closeout, or publish/tag 1.0.0.
+
+## Gates and efficiency
+
+- P1–P3: focused tests + typecheck; target counterexamples first; avoid unrelated repo-wide refactoring.
+- P4–P6: focused sandbox/MCP security tests and existing adapter tests. DENY-DEFAULT if platform unsupported; no unsafe fallbacks to achieve GREEN.
+- P7–P8: concrete evidence linkage, existing trigger goldens and past-report replay matrix; false VERIFIED blocks the sequence.
+- P9: full deterministic test matrix, `npm pack --dry-run`, CI scope and recorded command proof; P10: real manual observations only.
+- Each prompt must leave package version at previous checkpoint if required checks FAIL/BLOCK. Only after real automated checks pass set assigned patch version; runner owns the commit.
+- Do not touch original Dope runner scripts or root package-lock.json; keep executed prompt files immutable; append corrections and failed qualification evidence rather than rewriting.
+- No implicit scope expansion: owner-approved Q1 preserves current triggers; llm-zone owns formal benchmark criteria and scores.
+- **Authoring caveat:** until P1 test-only transition fix executes, current CI's 'zero prompt files' check is expected to fail on an authored P1 stack. This is not waived or labeled green.
+
+## Final deliverable definition
+
+Nine independently checkpointed code changes and one manual review, with complete A01–A12 coverage, source-bound evidence, no missing-gate false success, no supervisor mutation permissions, real Pi/MCP proof and owner release disposition. Headless success alone is not Pi Sitter 1.0 acceptance.
+
+[Prompt assessment](prompt-assessment.md) · [Audit A01–A12](codebase-gap-audit.md) · [Qualification ledger](qualification/README.md).

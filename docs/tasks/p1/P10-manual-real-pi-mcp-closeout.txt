@@ -1,0 +1,38 @@
+TASK: Phase 1 / P10 — INDEPENDENT MANUAL real Pi and MCP closeout
+
+MODEL / REASONING / USAGE
+- Recommended configuration: `GPT-6 Sol Medium`.
+- Browser required: yes.
+
+VERSIONING
+- This prompt's assigned project version is `0.1.10`.
+
+TIER: T3 — Manual native qualification
+STATE: AUTHORED ONLY / NOT EXECUTED
+AUDIT FINDINGS: A12 manual
+BASIS: Pi Sitter 0.1.0 source baseline d028500bc5d79638e9093d964e919d3a978f021f; do not assume HEAD remains identical after prior prompts.
+
+TIER: T3 — OWNER-INITIATED MANUAL QUALIFICATION, NOT RUNNER-MANAGED
+ENTRY GATE
+- Owner separately authorizes this AFTER P1–P9 implementation checkpoints and independently reviews p9-headless.md plus every previously BLOCKED issue.
+- This prompt is marked Browser required: yes. as an original Dope runner **automation interlock**, not proof that a browser alone can qualify Pi/MCP. The unchanged runner must refuse to execute P10 even with --closeout.
+- Do not run on the owner's everyday project or write to production source/test suites. Use controlled disposable test projects; record what was actually exercised.
+
+LIVE ENVIRONMENT
+1. On the user's actual Pi Coding Agent installation, record OS, Node, Pi package version, supervisor model, current pi-sitter Git SHA/package version, project paths, MCP server identities and installed extension path. Reconcile with P9 build rather than trusting a simulated one.
+2. Install the **packed** Pi Sitter package and load it from at least two unrelated project directories, including a non-Godot project. Verify extension auto-discovery, /sitter commands, observed modes and that no background supervisor model runs when idle.
+3. Exercise T1, T2, T3 and T4 existing triggers at their recorded thresholds without changing trigger semantics; check Shadow vs Active vs Off, duplicate suppression, errors, cancellations, session resume and natural-turn advisory delivery.
+4. Use protected controller-authored Vitest acceptance tests and known checked snapshots for PASS, attributable assertion FAIL, missing/skipped UNVERIFIED and timeout/sandbox BLOCKED. Verify milestone subset, final requirements and repair new-source rerun. Confirm worker development tests cannot change the scored manifest.
+5. With **actual safe MCP servers**, compare worker and Pi Sitter vetted read operations. Attempt disallowed write/edit/command, nested/deferred/codemode indirect writes and out-of-scope resource access in a non-destructive controlled fixture. Confirm host refusal and worker permissions are unaffected; record any unavailable tool as a limitation rather than broadening access.
+6. Test evidence-directed investigation and failure-specific recovery, then let the worker (not Sitter) implement a controlled repair and reverify. Confirm independent requirement coverage and a deliberately uninspected requirement remain non-VERIFIED despite green tests.
+7. Reproduce stale report/replay/cancellation and task-switch scenarios with verified run identity. Test package install/uninstall lifecycle and whether root/temporary files and supervisor transcripts clean up without touching unrelated user data.
+8. Record R01–R11 each as PASS, FAIL, NOT RUN, BLOCKED or EVIDENCE GAP, with source hash/dirty state, environment, real commands, captured outputs, logs and screenshots where helpful. Independent owner weighs outstanding security/completion gaps and records acceptance or HOLD.
+
+STOP / RECOVERY
+- If an MCP write escapes host filter, sandbox leaks host data, a missing gate produces VERIFIED, or stale evidence is shown as current, STOP. Preserve evidence and route a separately reviewed correction; do not silently weaken a safety invariant or force-green.
+- Do not auto-run further implementation stacks, edit scoring suites, publish to npm, or tag a 1.0 release during this closeout.
+- After owner acceptance only, a separately authorized manual checkpoint version 0.1.10 may be recorded if the original runner's version requirements permit it; 1.0.0 is a separate explicit release authorization.
+
+REPORT
+- Write docs/tasks/p1/qualification/p10-native-closeout.md with truthful case-by-case observations, reproduction commands, environment, source/suite/run refs, limitations, recommended release disposition and explicit owner decision or pending approval.
+- If manual evidence is incomplete, state NOT GREEN / HOLD. The fact this manual prompt exists is not qualification.

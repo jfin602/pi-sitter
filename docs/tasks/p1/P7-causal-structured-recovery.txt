@@ -1,0 +1,55 @@
+TASK: Phase 1 / P7 — Make recovery advice causal, specific and task-scoped
+
+MODEL / REASONING / USAGE
+- Recommended configuration: `GPT-6 Sol High`.
+- Browser required: no.
+
+VERSIONING
+- This prompt's assigned project version is `0.1.7`.
+
+TIER: T1 — Bounded source implementation and evidence
+STATE: AUTHORED ONLY / NOT EXECUTED
+AUDIT FINDINGS: A09
+BASIS: Pi Sitter 0.1.0 source baseline d028500bc5d79638e9093d964e919d3a978f021f; do not assume HEAD remains identical after prior prompts.
+
+READ FIRST (bounded)
+- AGENTS.md; BOOT.md; MODULES.md.
+- docs/decisions/0001-ten-approved-decisions.md, docs/tasks/p1/codebase-gap-audit.md, docs/tasks/p1/implementation-plan.md and relevant contract(s).
+- Only the primary source/test files for this prompt, and actual installed Pi 1.5.2 declarations when an API change depends on them. Do not load unrelated project docs or llm-zone private data.
+- Inspect real Git HEAD, dirty owner work, existing tests and prompt checkpoint history first; stop rather than overwrite unexpected state.
+
+NON-NEGOTIABLE BOUNDARIES
+- Pi Sitter remains standalone and general purpose: no llm-zone/Godot/benchmark test dependency in runtime.
+- Preserve existing T1–T4 triggers, thresholds, budgets, Off/Shadow/Active behavior, cancellations, worker advisory timing and quiet on-demand inference.
+- The worker edits implementation; supervisor diagnoses via host-enforced read-only operations. Controller owns scored acceptance tests and formal task outcome.
+- Strict machine-readable gate evidence, not a model assertion, determines acceptance test PASS. Missing/stale/blocked evidence cannot become verified.
+- Original Dope developer runner scripts must remain byte-identical. Do not run another implementation prompt or self-commit; runner alone owns Git checkpoint/commit.
+- No root package-lock.json, no dependency churn unrelated to task, no unapproved npm publish, tag or jump to 1.0.0.
+
+PRIMARY FILES
+- src/analysis.ts, src/prompt.ts, src/completion.ts, safe receipt/evidence utilities, focused recovery tests and docs/contracts/recovery.md.
+- Use the normalized failed gate and provenance-bound research outputs from P2–P6.
+
+IMPLEMENT
+1. Define one structured recovery object with trigger, failed gate/test IDs, current task/milestone/suite/source/run, observed assertion/tool failure, relevant evidence refs+locations, likely cause and uncertainty/confidence, affected files/functions, ordered concrete repair actions, approved verification rerun and unresolved gaps.
+2. Require causal evidence: quote/claim must reference its actual failed gate or successful approved inspection for the same attempt. Do not search arbitrary passing-gate text, stale report, serialized errors or untrusted tool output for coincidental substrings as authorization.
+3. Replace generic 'inspect artifacts and fix' output as a success path. If evidence does not identify the cause, give a bounded, explicit UNVERIFIED diagnosis with next safe inspection suggestions and avoid fabricated precision. Suspected protected-suite defect escalates to authorized test owner without changing it.
+4. Keep one focused advisory from Sitter to the worker, delivered only through current safe worker boundary. Worker chooses and implements repairs; Pi Sitter stays dormant during implementation. Avoid repeated guidance and unrelated project audits.
+5. Preserve existing emergency trigger short-action behavior where necessary: provide structured metadata for the corresponding diagnosis without changing the trigger threshold, delivery cadence, budget or Shadow mode. Keep failed gate recovery distinct from test authoring/scoring.
+
+FOCUSED PROOF
+- Simulated two-file defect yields exact causal evidence, relevant locations and ordered instructions, with rerun IDs.
+- A passing gate quote, stale receipt or unrelated error text causes abstention rather than claimed root cause.
+- Advice never grants write privileges to the supervisor or repeats indefinitely; test T1–T4 and old recovery flow after changes; run npm run check.
+
+EXIT / STOP
+If root cause remains unsupported, mark it uncertain and stop; do not manufacture a fix to satisfy a test.
+
+DOPE RUNNER VERSION / CHECKPOINT CONTRACT
+- Run focused regression tests first; record real commands/results. Only after all required automated checks are GREEN, update package.json version to `0.1.7`. Do not claim manual/native or formal release gates from simulation.
+- The exact unchanged Dope runner verifies the updated `0.1.7` and owns the version-named Git commit. Do not invoke git commit, move HEAD or modify P1–P10 authored prompt texts during execution.
+- Preserve .npmrc package-lock=false; do not add package-lock.json. Respect current package exports and pi.extensions path.
+- If any mandatory test or safety check fails, DO NOT advance version merely to force a runner commit. Leave evidence of NOT GREEN/BLOCKED and stop the sequence. Existing passing behavior must be covered by regressions.
+
+REPORT / HANDOFF
+- Report files changed, source revision or dirty basis, focused tests and outcomes, evidence gaps, known regressions, and precisely what P8 receives. Append bounded qualification evidence to docs/tasks/p1/qualification/ without rewriting old failures. Do not assert Phase 1 GREEN or publish.

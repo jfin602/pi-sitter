@@ -1,0 +1,56 @@
+TASK: Phase 1 / P3 — Normalize Vitest reports and prevent sparse false verification
+
+MODEL / REASONING / USAGE
+- Recommended configuration: `GPT-6 Sol High`.
+- Browser required: no.
+
+VERSIONING
+- This prompt's assigned project version is `0.1.3`.
+
+TIER: T1 — Bounded source implementation and evidence
+STATE: AUTHORED ONLY / NOT EXECUTED
+AUDIT FINDINGS: A04 A10 early
+BASIS: Pi Sitter 0.1.0 source baseline d028500bc5d79638e9093d964e919d3a978f021f; do not assume HEAD remains identical after prior prompts.
+
+READ FIRST (bounded)
+- AGENTS.md; BOOT.md; MODULES.md.
+- docs/decisions/0001-ten-approved-decisions.md, docs/tasks/p1/codebase-gap-audit.md, docs/tasks/p1/implementation-plan.md and relevant contract(s).
+- Only the primary source/test files for this prompt, and actual installed Pi 1.5.2 declarations when an API change depends on them. Do not load unrelated project docs or llm-zone private data.
+- Inspect real Git HEAD, dirty owner work, existing tests and prompt checkpoint history first; stop rather than overwrite unexpected state.
+
+NON-NEGOTIABLE BOUNDARIES
+- Pi Sitter remains standalone and general purpose: no llm-zone/Godot/benchmark test dependency in runtime.
+- Preserve existing T1–T4 triggers, thresholds, budgets, Off/Shadow/Active behavior, cancellations, worker advisory timing and quiet on-demand inference.
+- The worker edits implementation; supervisor diagnoses via host-enforced read-only operations. Controller owns scored acceptance tests and formal task outcome.
+- Strict machine-readable gate evidence, not a model assertion, determines acceptance test PASS. Missing/stale/blocked evidence cannot become verified.
+- Original Dope developer runner scripts must remain byte-identical. Do not run another implementation prompt or self-commit; runner alone owns Git checkpoint/commit.
+- No root package-lock.json, no dependency churn unrelated to task, no unapproved npm publish, tag or jump to 1.0.0.
+
+PRIMARY FILES
+- src/gates.ts, src/verifier.ts, src/index.ts, src/completion.ts, focused validator/adapter module and tests; docs/contracts/gate-report.md and docs/verification.md for migration truth.
+- Depend on P2's trusted controller manifest and task/suite/source identities. Preserve current non-test triggers and the runner code.
+
+IMPLEMENT
+1. Build one strict framework-neutral report normalization/validation boundary consumed by **both** injected dependencies.verify and configured subprocess verification before appendEntry, UI rendering, completion or recovery.
+2. Add a Vitest-first adapter consuming Vitest's structured JSON/report data, not prose from the console. Normalize test IDs, required gate mapping, executed/skipped counts, PASS/FAIL/UNVERIFIED, assertion expected/actual, error messages, source locations and on-demand log/artifact references where available.
+3. Handle executable exit semantics correctly: Vitest may return nonzero on normal assertion failure. Capture and validate machine-readable output on such exits, classify attributable assertion FAIL separately from timeout, crash, signal, schema failure, suite drift and sandbox failure (BLOCKED). No raw stdout string search determines PASS.
+4. Validate gate manifest membership/completeness, duplicated/unknown/missing test IDs, snapshot/suite/run identity, report size, bounded diagnostics and invalid counts. Empty, malformed, skipped/uncovered or stale results never pass.
+5. Place a **fail-closed completion sentinel** now: missing authoritative expected gates and a fully green export test with an uninspected required accessibility item must never return VERIFIED, even before the fuller P8 independent requirement audit exists.
+6. Preserve historical schema v1 as clearly labeled read-only evidence with no automatic current-success promotion. Refuse incompatible data rather than broad compatibility shims; do not embed Vitest in the supervisor reasoning core.
+
+FOCUSED PROOF
+- Real Vitest pass and attributable failing assertion; nonzero assertion exit maps to FAIL, crash/timeout/malformed output maps to BLOCKED.
+- Skipped test, missing mandatory gate, duplicated result, source drift, wrong suite, spoofed counts and injected invalid report all fail closed.
+- Old v1 history is displayed accurately but cannot authorize new VERIFIED. Run focused tests, npm run check and relevant old completion regressions.
+
+EXIT / STOP
+Do not loosen manifest checks to make existing tests pass. On a conflicting legacy positive fixture, revise the fixture to the new trusted contract and document the change, retaining its historical behavior as an explicit legacy test.
+
+DOPE RUNNER VERSION / CHECKPOINT CONTRACT
+- Run focused regression tests first; record real commands/results. Only after all required automated checks are GREEN, update package.json version to `0.1.3`. Do not claim manual/native or formal release gates from simulation.
+- The exact unchanged Dope runner verifies the updated `0.1.3` and owns the version-named Git commit. Do not invoke git commit, move HEAD or modify P1–P10 authored prompt texts during execution.
+- Preserve .npmrc package-lock=false; do not add package-lock.json. Respect current package exports and pi.extensions path.
+- If any mandatory test or safety check fails, DO NOT advance version merely to force a runner commit. Leave evidence of NOT GREEN/BLOCKED and stop the sequence. Existing passing behavior must be covered by regressions.
+
+REPORT / HANDOFF
+- Report files changed, source revision or dirty basis, focused tests and outcomes, evidence gaps, known regressions, and precisely what P4 receives. Append bounded qualification evidence to docs/tasks/p1/qualification/ without rewriting old failures. Do not assert Phase 1 GREEN or publish.

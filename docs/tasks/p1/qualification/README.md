@@ -33,3 +33,7 @@ Use `PASS`, `FAIL`, `NOT RUN`, `BLOCKED`, `EVIDENCE GAP`. A simulated tool respo
 | R10/R11 | A12 packed install into unrelated TS and another project type incl. non-Godot; real Pi/MCP manual verification + owner disposition | NOT RUN |
 
 **Historical baseline, separate from new 1.0 gate evidence:** [CI 44943269353](https://github.com/jfin602/pi-sitter/actions/runs/44943269353/job/136964909340) @ `feea1c1` recorded 109/109 developer-runner and 47/47 existing extension tests passing, typecheck passed, pack dry-run listed 35 files. Audit-local 109/109 runner, 3/3 analysis tests and dry-run passed; network namespace local verifier run BLOCKED in audit environment, existing CI sandbox fixture passed. Do not mark the new R01–R11 cases GREEN from that baseline. Record source SHA/dirty basis, Pi/Node/Vitest versions, exact commands, expected/observed outputs and artifact refs for each future check.
+
+## Authored prompt-stack status (not executed)
+
+P1–P9 implementation prompt texts and P10 manual closeout have been authored. All **new** F0-R and 1.0 acceptance checks above remain NOT RUN until separately authorized implementation and evidence. Baseline CI will initially detect the temporary `tests/runner/pi-sitter-runner-compat.test.mjs` "zero prompt" assertion; only P1's test-only correction resolves it. Do not record that as GREEN prior to an observed rerun.

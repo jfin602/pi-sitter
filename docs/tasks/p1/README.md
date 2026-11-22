@@ -1,39 +1,31 @@
-# P1 — Pi Sitter 1.0 Test-Directed Architecture
+# P1 — Pi Sitter 1.0 Test-directed implementation prompt stack
 
-**Status:** PLANNED / NOT AUTHORED AS RUNNER PROMPTS / NOT EXECUTED / NOT QUALIFIED  
-**Authority:** [ADR 0001](../../decisions/0001-ten-approved-decisions.md) and [contracts index](../../README.md).  
-**Starting package:** `0.1.0`. The historical Dope `p1` stack expects version increments `0.1.1`–`0.1.6` once implementation prompts are authored and approved. `1.0.0` is separate owner-qualified release.
+**Status:** PROMPTS AUTHORED / NOT EXECUTED / NOT QUALIFIED. **Authoring basis:** `d028500`, approved Q1–Q10 and audit A01–A12.  
+**First implementation checkpoint:** `0.1.1` from package `0.1.0`. **Manual final:** P10 `0.1.10`. **Release:** `1.0.0` only after separately approved qualification/publication.
 
-## Candidate prompt boundaries (not yet runnable)
+## Runner-ready prompt inventory
 
-| Prompt | Responsibility | Required proof |
-| --- | --- | --- |
-| P1 | Strict structured gate-report, suite provenance and Vitest adapter | Valid/invalid/missing/skipped/freshness negative tests |
-| P2 | Approved isolated runner with least-privilege sandbox | Reject command injection, writes, disclosure, timeout and stale evidence |
-| P3 | Safe worker MCP capability discovery and host read-only tool policy | Read parity and indirect mutation refusal; preserve existing triggers |
-| P4 | Bounded evidence-specific recovery and independent requirement review | Detailed repair and separate requirement/acceptance ledger |
-| P5 | Integrated safety/regression, installation and non-Godot fixtures | Headless reports, unchanged lifecycle, manual closeout handoff |
-| P6 (manual) | Real Pi extension / MCP / 1.0 release qualification | Separately owner-authorized; never auto-GREEN or auto-publish |
+| Prompt | File | Audit IDs | Version | Gate |
+| --- | --- | --- | --- | --- |
+| P1 | [`P1-runner-and-trigger-baseline.txt`](P1-runner-and-trigger-baseline.txt) | A01 A02 | `0.1.1` | Implementation |
+| P2 | [`P2-trusted-task-and-gate-manifest.txt`](P2-trusted-task-and-gate-manifest.txt) | A03 | `0.1.2` | Implementation |
+| P3 | [`P3-vitest-report-validation.txt`](P3-vitest-report-validation.txt) | A04 A10 early | `0.1.3` | Implementation |
+| P4 | [`P4-isolated-verifier-and-checkpoints.txt`](P4-isolated-verifier-and-checkpoints.txt) | A05 A06 | `0.1.4` | Implementation |
+| P5 | [`P5-filtered-worker-mcp-research.txt`](P5-filtered-worker-mcp-research.txt) | A07 | `0.1.5` | Implementation |
+| P6 | [`P6-bounded-snapshot-and-receipts.txt`](P6-bounded-snapshot-and-receipts.txt) | A08 | `0.1.6` | Implementation |
+| P7 | [`P7-causal-structured-recovery.txt`](P7-causal-structured-recovery.txt) | A09 | `0.1.7` | Implementation |
+| P8 | [`P8-requirements-and-attempt-bound-replay.txt`](P8-requirements-and-attempt-bound-replay.txt) | A10 A11 | `0.1.8` | Implementation |
+| P9 | [`P9-cross-project-integration-qualification.txt`](P9-cross-project-integration-qualification.txt) | A12 | `0.1.9` | Implementation |
+| P10 | [`P10-manual-real-pi-mcp-closeout.txt`](P10-manual-real-pi-mcp-closeout.txt) | A12 manual | `0.1.10` | Manual T3; runner-blocked |
 
-Before authoring implementation prompts, inspect current HEAD and real Pi/MCP APIs, validate adapter feasibility and finalize the proposed schema fields. The owner must review complete prompt texts before execution. Preserve current trigger definitions exactly; no benchmark-specific fixtures in core logic.
+These are the exact 10 authored runnable-grammar files. The first nine are bounded implementation prompts; the tenth has a **Browser required: yes.** manual interlock, and the unchanged Dope runner must refuse automation of it. The conceptual F0-R/P1–P6 roadmap workstreams differ from the sequential runner prompt numbers.
 
-## Deferred/not authorized
+## Bounded handoff
 
-No public npm publication, release tag, automatic closeout, full benchmark execution or llm-zone source edits during this docs foundation. No V1 schema migration without corresponding tests and separately approved implementation.
+1. [Assessment](prompt-assessment.md) → [implementation plan](implementation-plan.md) → [all A01–A12 findings](codebase-gap-audit.md) → [qualification ledger](qualification/README.md).
+2. Owner reviews exact texts; no implementation execution is implied by authoring. To validate syntax only: `npm run codex:phase:validate -- p1`. To execute the approved first nine later: `npm run codex:phase -- p1` from clean reviewed checkout, never as part of prompt writing.
+3. **KNOWN F0-R/CI issue:** `tests/runner/pi-sitter-runner-compat.test.mjs` currently asserts zero P1 prompts and constant `0.1.0`. P1 addresses this. Until that specific test-only correction is implemented, CI on the authored stack may be red. Do not misrepresent this as a pass; preserve canonical Dope scripts.
+4. Verify original trigger behavior unchanged, full original requirements persisted, complete controller-owned acceptance inventory, strict Vitest evidence, host-enforced read-only MCP, constrained test execution, attempt-bound replay and a true independent requirement audit. On non-GREEN, stop and append correction evidence.
+5. Manual native P10 and formal `1.0.0` publication require independent owner approval. No prompt owns scored llm-zone benchmark criteria.
 
-See [qualification template](qualification/README.md). An authored prompt/commit is NOT evidence of qualified functionality.
-
-## Applied source-audit execution order (Issue #3)
-
-**F0-R prerequisites before any P1 prompt execution:** A01 transition-safe `tests/runner/pi-sitter-runner-compat.test.mjs` and A02 source-anchored T1–T4 golden coverage. These are **planned fixes** to implement in a separately approved prompt. Existing triggers, runner scripts and advisory budget remain unchanged under this documentation action.
-
-| Execution phase | Audit IDs | Source focus | Key acceptance |
-| --- | --- | --- | --- |
-| F0-R | A01, A02 | runner compatibility test, `src/core.ts`, `src/config.ts`, adapter tests | Accept a valid `0.1.1` checkpoint and prompts; reject bad grammar; freeze existing triggers |
-| P1 | A03, A04 + early A10 negative | `src/core.ts`, `src/gates.ts`, `src/verifier.ts`, `src/index.ts` | Full task + trusted expected manifest; both verifier paths normalized; incomplete/all-green report not VERIFIED |
-| P2 | A05, A06 | verifier, index, verifier tests | Approved restricted run, correct milestone/final/post-repair checks, cleanup |
-| P3 | A07, A08 | broker, supervisor-session, Pi integration | Vet actual MCP read parity; deny indirect writes; source-bound receipts |
-| P4 | A09, A10, A11 | analysis, prompt, completion, index, UI tests | Causal repair; independently evidenced requirements; no stale report/replay |
-| P5–P6 | A12 | package/loader tests, multi-project fixtures, manual proof | Tarball install; end-to-end unrelated projects; real Pi/MCP and owner closeout |
-
-**Stop rules:** no advancement on a failed negative/security gate, unverified provenance, changed trigger semantics, unauthorized acceptance-test modification, schema guesswork or incomplete manual evidence. Preserve failed evidence and append a reviewed recovery task. Proposed vNext schema fields, legacy v1 handling and controller-owned ingress need focused approval before those implementation steps. See [complete A01–A12 audit](codebase-gap-audit.md) and [dependency plan](implementation-plan.md). **No prompt texts authored/executed and no version changed by this docs application.**
+[Project architecture](../../ARCHITECTURE.md) · [dev runner](../../runner.md).

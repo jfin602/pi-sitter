@@ -11,4 +11,4 @@ Prompt stacks (once separately authored) live in `docs/tasks/<folder>/P1-*.txt` 
 
 - [A01–A12 codebase audit](p1/codebase-gap-audit.md) and [source-anchored implementation plan](p1/implementation-plan.md) are the required basis for P1 prompt authoring.
 - F0-R **must precede P1**: transitional runner-compatibility tests and golden existing-trigger behavior. New wire schema and v1 ingress still require targeted owner review.
-- [Qualification ledger](p1/qualification/README.md) differentiates existing baseline tests from unrun 1.0 acceptance cases. No phase prompts authored/executed by documentation application.
+- [Qualification ledger](p1/qualification/README.md) differentiates existing baseline tests from unrun 1.0 acceptance cases. The later `/prompt-write p1` authored nine implementation prompts and one manual P10; **no prompts have executed or been qualified**.

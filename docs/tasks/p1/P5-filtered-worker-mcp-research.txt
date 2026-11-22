@@ -1,0 +1,55 @@
+TASK: Phase 1 / P5 — Expose vetted worker-equivalent MCP reads through host policy
+
+MODEL / REASONING / USAGE
+- Recommended configuration: `GPT-6 Sol High`.
+- Browser required: no.
+
+VERSIONING
+- This prompt's assigned project version is `0.1.5`.
+
+TIER: T2 — Bounded source implementation and evidence
+STATE: AUTHORED ONLY / NOT EXECUTED
+AUDIT FINDINGS: A07
+BASIS: Pi Sitter 0.1.0 source baseline d028500bc5d79638e9093d964e919d3a978f021f; do not assume HEAD remains identical after prior prompts.
+
+READ FIRST (bounded)
+- AGENTS.md; BOOT.md; MODULES.md.
+- docs/decisions/0001-ten-approved-decisions.md, docs/tasks/p1/codebase-gap-audit.md, docs/tasks/p1/implementation-plan.md and relevant contract(s).
+- Only the primary source/test files for this prompt, and actual installed Pi 1.5.2 declarations when an API change depends on them. Do not load unrelated project docs or llm-zone private data.
+- Inspect real Git HEAD, dirty owner work, existing tests and prompt checkpoint history first; stop rather than overwrite unexpected state.
+
+NON-NEGOTIABLE BOUNDARIES
+- Pi Sitter remains standalone and general purpose: no llm-zone/Godot/benchmark test dependency in runtime.
+- Preserve existing T1–T4 triggers, thresholds, budgets, Off/Shadow/Active behavior, cancellations, worker advisory timing and quiet on-demand inference.
+- The worker edits implementation; supervisor diagnoses via host-enforced read-only operations. Controller owns scored acceptance tests and formal task outcome.
+- Strict machine-readable gate evidence, not a model assertion, determines acceptance test PASS. Missing/stale/blocked evidence cannot become verified.
+- Original Dope developer runner scripts must remain byte-identical. Do not run another implementation prompt or self-commit; runner alone owns Git checkpoint/commit.
+- No root package-lock.json, no dependency churn unrelated to task, no unapproved npm publish, tag or jump to 1.0.0.
+
+PRIMARY FILES
+- src/supervisor-session.ts, src/broker.ts, src/index.ts and Pi 1.5.2 integration tests; docs/contracts/supervisor-tools.md. Keep the existing pi_sitter_inspect fallback.
+- Current supervisor explicitly rejects allowedMcpTools and prepare; it intentionally isolates a separate Pi session. Do not open direct tools until the filter is enforced.
+
+IMPLEMENT
+1. Inspect installed @earendil-works/pi-coding-agent@1.5.2 API and MCP extension code. Pi getAllTools exposes metadata; getActiveTools is the model-visible list, not a security sandbox; a server readOnlyHint is unverified. SDK child sessions do not automatically load built-in MCP extensions.
+2. Discover worker-connected MCP capabilities using a trusted host API, preserving their server/source identity and schema. Build a default-deny host dispatcher that validates each specific operation, arguments, resolved resource and nested/deferred/codemode route before execution. A label or tool name ending in 'read' is insufficient.
+3. Expose only vetted read operations through a constrained proxy/interface into the supervisor's independent session; never transfer worker write, Git commit, arbitrary shell, environment mutation or test-edit privileges. Protect secret resources, symlink/path escapes, indirect side effects and dangerous network endpoints.
+4. Capture allowed and denied call metadata with bounded args/result digests and task/source identity. Error or denied responses remain untrusted evidence, not instructions. Preserve worker's original tool access unmodified.
+5. The unsupported/non-vetted capability stays unavailable with an explicit reason. Keep snapshot-only pi_sitter_inspect path as a safe fallback. Leave quiet on-demand supervisor lifecycle and all existing non-test triggers alone.
+
+FOCUSED PROOF
+- A real Pi instance with a controlled MCP server lets both worker and Sitter perform the same preapproved read and blocks direct/indirect mutator calls at dispatch; tool annotations cannot bypass policy.
+- Nested/codemode/deferred tool routes cannot execute denied operations; worker retains its permissions; zero supervisor inference occurs while idle.
+- Test failures/denials produce explicit evidence and don't spill credentials or process unrelated resources. Run focused safety tests, npm run check and old plugin/loader regressions.
+
+EXIT / STOP
+If host-layer enforcement cannot cover a capability, do not grant it based on prompt restriction alone. Report exact Pi API limitation and leave the feature blocked.
+
+DOPE RUNNER VERSION / CHECKPOINT CONTRACT
+- Run focused regression tests first; record real commands/results. Only after all required automated checks are GREEN, update package.json version to `0.1.5`. Do not claim manual/native or formal release gates from simulation.
+- The exact unchanged Dope runner verifies the updated `0.1.5` and owns the version-named Git commit. Do not invoke git commit, move HEAD or modify P1–P10 authored prompt texts during execution.
+- Preserve .npmrc package-lock=false; do not add package-lock.json. Respect current package exports and pi.extensions path.
+- If any mandatory test or safety check fails, DO NOT advance version merely to force a runner commit. Leave evidence of NOT GREEN/BLOCKED and stop the sequence. Existing passing behavior must be covered by regressions.
+
+REPORT / HANDOFF
+- Report files changed, source revision or dirty basis, focused tests and outcomes, evidence gaps, known regressions, and precisely what P6 receives. Append bounded qualification evidence to docs/tasks/p1/qualification/ without rewriting old failures. Do not assert Phase 1 GREEN or publish.

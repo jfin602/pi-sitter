@@ -27,8 +27,8 @@ Dope runner does NOT support `--dry-run`, `--preflight`, `--resume-dirty`, `--mo
 
 ## P1 stack planning and versions
 
-Package baseline stays `0.1.0`. Historical `p1` phase grammar assigns P1 `0.1.1`, P2 `0.1.2`, etc. Each implementation prompt updates version metadata; the runner checks version/history then owns the commit. An independently authorized final manual P6 may use `0.1.6` only on observed closeout. **No `1.0.0` tagging or publishing by the phase runner.**
+Package baseline stays `0.1.0`. Historical `p1` phase grammar assigns P1 `0.1.1`, P2 `0.1.2`, etc. Each implementation prompt updates version metadata; the runner checks version/history then owns the commit. An independently authorized final manual P10 may use `0.1.10` only after observed native closeout; P1–P9 target `0.1.1` through `0.1.9`. **No `1.0.0` tagging or publishing by the phase runner.**
 
-**Current:** P1 is planned only. There are **no P1 prompt files to validate or execute** yet. Developer runner setup/docs do not constitute implementation or qualification. Do not run `codex:phase -- p1` until the stack exists and the owner approves execution.
+**Current:** P1–P10 prompt files are **AUTHORED, NOT EXECUTED**. Developer runner setup and prompt authoring do not constitute implementation/qualification. Separately approve execution after review. **Known compatibility blocker:** until P1 repairs the foundation-only `tests/runner/pi-sitter-runner-compat.test.mjs` assertions (zero prompt files and fixed 0.1.0), this authored stack will cause its existing CI test to fail; do not call it GREEN or edit the canonical Dope runner.
 
 See [the P1 task](tasks/p1/README.md), [workflow](workflow.md), and [qualification ledger](tasks/p1/qualification/README.md).

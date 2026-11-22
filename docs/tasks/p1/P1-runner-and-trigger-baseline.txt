@@ -1,0 +1,57 @@
+TASK: Phase 1 / P1 — Unblock runner transitions and freeze existing triggers
+
+MODEL / REASONING / USAGE
+- Recommended configuration: `GPT-6 Sol Medium`.
+- Browser required: no.
+
+VERSIONING
+- This prompt's assigned project version is `0.1.1`.
+
+TIER: T1 — Bounded source implementation and evidence
+STATE: AUTHORED ONLY / NOT EXECUTED
+AUDIT FINDINGS: A01 A02
+BASIS: Pi Sitter 0.1.0 source baseline d028500bc5d79638e9093d964e919d3a978f021f; do not assume HEAD remains identical after prior prompts.
+
+READ FIRST (bounded)
+- AGENTS.md; BOOT.md; MODULES.md.
+- docs/decisions/0001-ten-approved-decisions.md, docs/tasks/p1/codebase-gap-audit.md, docs/tasks/p1/implementation-plan.md and relevant contract(s).
+- Only the primary source/test files for this prompt, and actual installed Pi 1.5.2 declarations when an API change depends on them. Do not load unrelated project docs or llm-zone private data.
+- Inspect real Git HEAD, dirty owner work, existing tests and prompt checkpoint history first; stop rather than overwrite unexpected state.
+
+NON-NEGOTIABLE BOUNDARIES
+- Pi Sitter remains standalone and general purpose: no llm-zone/Godot/benchmark test dependency in runtime.
+- Preserve existing T1–T4 triggers, thresholds, budgets, Off/Shadow/Active behavior, cancellations, worker advisory timing and quiet on-demand inference.
+- The worker edits implementation; supervisor diagnoses via host-enforced read-only operations. Controller owns scored acceptance tests and formal task outcome.
+- Strict machine-readable gate evidence, not a model assertion, determines acceptance test PASS. Missing/stale/blocked evidence cannot become verified.
+- Original Dope developer runner scripts must remain byte-identical. Do not run another implementation prompt or self-commit; runner alone owns Git checkpoint/commit.
+- No root package-lock.json, no dependency churn unrelated to task, no unapproved npm publish, tag or jump to 1.0.0.
+
+PRIMARY FILES
+- tests/runner/pi-sitter-runner-compat.test.mjs and tests/adapter.test.mjs. Touch only additional focused test fixtures as justified.
+- src/core.ts and src/config.ts are READ-ONLY FOR THIS PROMPT: characterize actual behavior; do not change trigger definitions, thresholds, counters, naming, callbacks or budget policy.
+- Do not change scripts/codex-phase-core.mjs, scripts/codex-phase.mjs or scripts/validate-codex-phase.mjs.
+
+IMPLEMENT
+1. Replace the test that permanently asserts package version equals 0.1.0 with a transition-safe invariant that accepts the real historical pre-1.0 p1 checkpoint progression, but still fails incorrect phase/patch versions. Retain the existing synthetic 0.1.0 unit fixture; runner still owns version verification.
+2. Replace the test that asserts the p1 directory contains zero executable prompt files. Parse the actual P1–P10 entries using the unchanged buildPlan grammar; require contiguous numbering, exactly one final manual closeout with Browser required yes, and correct assigned versions 0.1.1–0.1.10. Reject malformed prompts, wrong phase and unexpected filenames. Preserve original three Dope Git blob SHA checks and root no-lockfile invariant.
+3. Record existing trigger behavior as golden deterministic tests: T1 two equivalent failures; T2 two-enable/three-discovery and repeated setup; T3 configured final validator; T4 no-op/repeated-inspection. Observe immediately before, at and after thresholds plus meaningful progress/reset, duplicate suppression, Shadow/Active/Off, cancellation and resume.
+4. Characterize rather than alter tool classifiers for save_scene, scene_tree, get_parse_errors, open_scene, generic edit/write plain-text receipts and setup. Explicitly leave the existing default advisory budget 16 vs configurable 32 / history cap 16 mismatch as a documented policy hold.
+5. Update relevant qualification notes with observed results, but do not mark P1 or 1.0 qualification green from baseline tests.
+
+FOCUSED PROOF
+- npm run test:runner; npm test; npm run check.
+- Confirm synthetic 0.1.0 fixture and current live checkpoint both pass, wrong versions/broken prompt grammar fail, and exact runner SHA invariants still pass.
+- Compare each trigger golden case to actual pre-change source behavior; no change in number/timing/content of interventions.
+- A test requiring zero P1 prompt files must no longer remain. Do not weaken protection by deleting the compatibility test.
+
+EXIT / STOP
+If a trigger goldens mismatch, a patch version would bypass runner constraints, or original Dope script identity changes, STOP and report NOT GREEN. Do not 'fix' the existing trigger policies.
+
+DOPE RUNNER VERSION / CHECKPOINT CONTRACT
+- Run focused regression tests first; record real commands/results. Only after all required automated checks are GREEN, update package.json version to `0.1.1`. Do not claim manual/native or formal release gates from simulation.
+- The exact unchanged Dope runner verifies the updated `0.1.1` and owns the version-named Git commit. Do not invoke git commit, move HEAD or modify P1–P10 authored prompt texts during execution.
+- Preserve .npmrc package-lock=false; do not add package-lock.json. Respect current package exports and pi.extensions path.
+- If any mandatory test or safety check fails, DO NOT advance version merely to force a runner commit. Leave evidence of NOT GREEN/BLOCKED and stop the sequence. Existing passing behavior must be covered by regressions.
+
+REPORT / HANDOFF
+- Report files changed, source revision or dirty basis, focused tests and outcomes, evidence gaps, known regressions, and precisely what P2 receives. Append bounded qualification evidence to docs/tasks/p1/qualification/ without rewriting old failures. Do not assert Phase 1 GREEN or publish.
