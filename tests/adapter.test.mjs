@@ -14,7 +14,7 @@ const ready = { kind: 'ready', diagnosis, latencyMs: 12, inputTokens: 100, outpu
 
 function harness(mode = 'shadow', diagnose = async () => ready, branch = [], verify, extra = {}) {
   process.env.PI_SITTER_MODE = mode;
-  const handlers = new Map(), commands = new Map(), entryRenderers = new Map(), messageRenderers = new Map(), entries = [...branch], statuses = [], widgets = [], notices = [], sent = [];
+  const handlers = new Map(), commands = new Map(), entryRenderers = new Map(), messageRenderers = new Map(), entries = [...branch], statuses = [], widgets = [], notices = [], sent = [], working = [];
   const pi = { on(name, fn) { const previous = handlers.get(name); handlers.set(name, previous ? async (...args) => { await previous(...args); return fn(...args); } : fn); }, registerCommand(name, value) { commands.set(name, value); },
     registerEntryRenderer(name, renderer) { entryRenderers.set(name, renderer); },
     registerMessageRenderer(name, renderer) { messageRenderers.set(name, renderer); },
@@ -24,11 +24,11 @@ function harness(mode = 'shadow', diagnose = async () => ready, branch = [], ver
   const ctx = { hasUI: true, cwd: '/unused', isIdle: () => true, sessionManager: { getBranch: () => entries, getSessionId: () => 'synthetic-session' },
     ui: { theme: { fg: (token, text) => `<${token}>${text}</${token}>` },
       setStatus: (key, value) => statuses.push([key, value]), setWidget: (key, value) => widgets.push([key, value]),
-      setWorkingMessage() {}, setWorkingVisible() {},
+      setWorkingMessage(value) { working.push(value); }, setWorkingVisible() {},
       notify: (message, level) => notices.push([message, level]) } };
   createPiSitter({ diagnose, verify, milestoneValidators: validators, ...extra })(pi);
   handlers.get('session_start')({ type: 'session_start', reason: 'startup' }, ctx);
-  return { pi, ctx, handlers, commands, entryRenderers, messageRenderers, entries, statuses, widgets, notices, sent };
+  return { pi, ctx, handlers, commands, entryRenderers, messageRenderers, entries, statuses, widgets, notices, sent, working };
 }
 
 test('completion uses stacked rows with theme-aware colors and emphasized status', () => {
@@ -180,6 +180,99 @@ test('Shadow records one outcome without opening the panel or injecting', async 
   assert.match(h.notices.at(-1)[0], /inference 1\/3;.*delivered 0;.*failed 0; budget 2; tokens 100\/40/);
 });
 
+test('accepted intervention renders muted immediately and completes the same purple card after a 10-second diagnosis', async () => {
+  let finished = false;
+  const h = harness('active', async () => {
+    await new Promise(resolve => setTimeout(resolve, 10_000));
+    finished = true;
+    return ready;
+  });
+  emitTool(h, 'delayed-a');
+  const start = performance.now();
+  const result = emitTool(h, 'delayed-b');
+  const task = boundary(h, result);
+  const events = h.entries.filter(entry => entry.customType === 'pi-sitter-intervention');
+  assert.equal(events.length, 1);
+  assert.equal(events[0].data.phase, 'started');
+  assert.equal(finished, false);
+  assert.equal(h.working.at(-1), 'Pi Sitter investigating…');
+  assert.ok(performance.now() - start < 1000, 'pending event must precede supervisor completion');
+  const renderer = h.entryRenderers.get('pi-sitter-intervention');
+  const styles = [];
+  const theme = { appearance: 'dark', style(text, options) { styles.push(options); return text; } };
+  const pending = renderer(events[0], { expanded: false }, theme).render(80);
+  assert.match(pending.join(''), /Investigating repeated tool failure/);
+  assert.ok(styles.every(style => style.bg.r === 55 && style.bg.g === 55 && style.bg.b === 55));
+  const delivery = await task;
+  assert.equal(delivery.entries.length, 1);
+  assert.equal(finished, true);
+  assert.equal(h.working.at(-1), undefined);
+  const terminal = h.entries.filter(entry => entry.customType === 'pi-sitter-intervention').at(-1);
+  assert.equal(terminal.data.id, events[0].data.id);
+  assert.equal(terminal.data.phase, 'completed');
+  styles.length = 0;
+  const complete = renderer(events[0], { expanded: true }, theme).render(80);
+  assert.match(complete.join(''), /Preload path is invalid/);
+  assert.match(complete.join(''), /Fix the preload string/);
+  assert.ok(styles.every(style => style.bg.r === 64 && style.bg.g === 51 && style.bg.b === 79));
+  assert.equal(renderer(terminal, { expanded: false }, theme), undefined);
+  assert.equal(h.entryRenderers.get('pi-sitter-outcome')(
+    h.entries.find(entry => entry.customType === 'pi-sitter-outcome'), { expanded: false }, theme), undefined);
+});
+
+test('failed and cancelled supervision end the pending card', async () => {
+  const failed = harness('active', async () => ({ kind: 'failed', reason: 'Supervisor unavailable', latencyMs: 3 }), [], undefined,
+    { limits: { ...piSitterLimits(), maxFallbackAdvisories: 0 } });
+  emitTool(failed, 'fail-a');
+  await boundary(failed, emitTool(failed, 'fail-b'));
+  const failure = failed.entries.filter(entry => entry.customType === 'pi-sitter-intervention');
+  assert.deepEqual(failure.map(entry => entry.data.phase), ['started', 'failed']);
+  const theme = { appearance: 'dark', style: (text) => text };
+  assert.match(failed.entryRenderers.get('pi-sitter-intervention')(failure[0], { expanded: false }, theme).render(80).join(''), /Supervisor unavailable/);
+
+  const cancelled = harness('active', (_ctx, _input, _limits, signal) => new Promise(resolve => {
+    signal.addEventListener('abort', () => resolve({ kind: 'canceled', latencyMs: 1 }), { once: true });
+  }));
+  emitTool(cancelled, 'cancel-a');
+  const pending = boundary(cancelled, emitTool(cancelled, 'cancel-b'));
+  await cancelled.commands.get('sitter').handler('off', cancelled.ctx);
+  await pending;
+  assert.deepEqual(cancelled.entries.filter(entry => entry.customType === 'pi-sitter-intervention').map(entry => entry.data.phase),
+    ['started', 'cancelled']);
+});
+
+test('ordinary Worker calls and passive monitoring create no intervention card', async () => {
+  const h = harness('active');
+  emitTool(h, 'single-failure');
+  assert.equal(h.entries.filter(entry => entry.customType === 'pi-sitter-intervention').length, 0);
+  const off = harness('off');
+  emitTool(off, 'off-a');
+  await boundary(off, emitTool(off, 'off-b'));
+  assert.equal(off.entries.filter(entry => entry.customType === 'pi-sitter-intervention').length, 0);
+});
+
+test('replayed intervention updates in place and unexpected terminal remains visible', () => {
+  const original = harness('active');
+  emitTool(original, 'replay-a');
+  return boundary(original, emitTool(original, 'replay-b')).then(() => {
+    const restored = harness('active', async () => { throw Error('should not diagnose'); }, original.entries);
+    const entries = restored.entries.filter(entry => entry.customType === 'pi-sitter-intervention');
+    const renderer = restored.entryRenderers.get('pi-sitter-intervention');
+    const theme = { appearance: 'dark', style: text => text };
+    assert.match(renderer(entries[0], { expanded: false }, theme).render(80).join(''), /Preload path is invalid/);
+    assert.equal(renderer(entries[1], { expanded: false }, theme), undefined);
+    const orphan = { type: 'custom', customType: 'pi-sitter-intervention', data: {
+      id: 'orphan', phase: 'completed', trigger: 'T1:orphan', stage: 'current', issue: 'Recovered result' } };
+    const recovered = harness('active', async () => ready, [orphan, structuredClone(orphan)]);
+    const orphanRenderer = recovered.entryRenderers.get('pi-sitter-intervention');
+    assert.match(orphanRenderer(recovered.entries[0], { expanded: false }, theme).render(80).join(''), /Recovered result/);
+    assert.equal(orphanRenderer(recovered.entries[1], { expanded: false }, theme), undefined);
+    const interrupted = harness('active', async () => ready, [entries[0]]);
+    assert.match(interrupted.entryRenderers.get('pi-sitter-intervention')(
+      interrupted.entries[0], { expanded: false }, theme).render(80).join(''), /Supervision ended before a result/);
+  });
+});
+
 test('Active delivers once at natural tool continuation and suppresses duplicate triggers', async () => {
   const h = harness('active');
   emitTool(h, 'a'); const result = emitTool(h, 'b');
@@ -247,6 +340,38 @@ test('deterministic no-op fallback steers only Active mode and stops at its own 
   emitNoop(shadow, 'a', 'shape');
   assert.equal(await boundary(shadow, emitNoop(shadow, 'b', 'shape')), undefined);
   assert.equal(shadow.entries.filter(entry => entry.customType === 'pi-sitter-outcome' && entry.data.kind === 'delivered').length, 0);
+});
+
+test('two identical edit errors get one fallback after inference is exhausted', async () => {
+  const limits = { ...piSitterLimits(), maxInferenceAttempts: 1, maxFallbackAdvisories: 1 };
+  let inferenceCalls = 0;
+  const h = harness('active', async () => {
+    inferenceCalls++;
+    return { kind: 'failed', reason: 'unsupported diagnosis', latencyMs: 1 };
+  }, [], undefined, { limits });
+  emitTool(h, 'initial-a');
+  await boundary(h, emitTool(h, 'initial-b'));
+  assert.equal(inferenceCalls, 1);
+  const emitEdit = id => {
+    const toolName = 'edit';
+    const text = 'No changes made to test/stage02.test.ts. The replacement produced identical content. This might indicate an issue with special characters.';
+    const result = { content: [{ type: 'text', text }] };
+    h.handlers.get('tool_execution_start')({ toolCallId: id, toolName, args: { path: 'test/stage02.test.ts' } }, h.ctx);
+    h.handlers.get('tool_execution_end')({ toolCallId: id, toolName, result, isError: true }, h.ctx);
+    return { role: 'toolResult', toolCallId: id, toolName, content: result.content, isError: true };
+  };
+  assert.equal(h.entries.filter(entry => entry.customType === 'pi-sitter-event').length, 1);
+  emitEdit('edit-a');
+  assert.equal(h.entries.filter(entry => entry.customType === 'pi-sitter-event').length, 1);
+  const advice = await boundary(h, emitEdit('edit-b'));
+  assert.match(advice.entries[0].content, /Stop repeating the edit/);
+  assert.match(advice.entries[0].content, /Do not edit protected acceptance tests/);
+  assert.equal(inferenceCalls, 1);
+  assert.equal(h.entries.filter(entry => entry.customType === 'pi-sitter-outcome' && entry.data.kind === 'delivered').length, 1);
+  assert.equal(h.entries.find(entry => entry.customType === 'pi-sitter-outcome' && entry.data.kind === 'delivered').data.source, 'fallback');
+  assert.equal(await boundary(h, emitEdit('edit-c')), undefined);
+  assert.equal(h.entries.filter(entry => entry.customType === 'pi-sitter-event').length, 2);
+  assert.equal(h.entries.filter(entry => entry.customType === 'pi-sitter-outcome' && entry.data.kind === 'delivered').length, 1);
 });
 
 test('post-advice same-tool progress records Worker recovery; repeated ineffective calls warn', async () => {
@@ -327,6 +452,11 @@ test('Session switch aborts old diagnosis without writing into the new session',
   h.handlers.get('session_start')({ type: 'session_start', reason: 'switch' }, h.ctx);
   assert.equal(await oldBoundary, undefined);
   assert.equal(h.entries.filter(entry => entry.customType === 'pi-sitter-outcome').length, 0);
+  const interrupted = h.entries.find(entry => entry.customType === 'pi-sitter-intervention');
+  assert.equal(interrupted?.data.phase, 'started');
+  const lines = h.entryRenderers.get('pi-sitter-intervention')(interrupted, { expanded: false },
+    { appearance: 'dark', style: text => text }).render(80);
+  assert.match(lines.join(''), /Supervision ended before a result was recorded/);
   assert.equal(h.statuses.at(-1)[1], '<muted>Pi Sitter active | sleeping | 1 trigger</muted>');
 });
 

@@ -146,6 +146,24 @@ function failureText(event: ToolObservation): string {
   return (typeof raw === 'string' ? raw : JSON.stringify(raw)).slice(0, MAX_TEXT);
 }
 
+/** Keep the signature's short prefix unchanged, but show a later failure when output opens with warnings. */
+function triggerFailureText(event: ToolObservation): string {
+  const prefix = failureText(event);
+  const result = event.result;
+  const raw = typeof result === 'string' ? result :
+    result && typeof result === 'object' && Array.isArray((result as { content?: unknown }).content) ?
+      (result as { content: Array<{ type?: string; text?: unknown }> }).content
+        .filter(item => item?.type === 'text').map(item => String(item.text ?? '')).join('\n') : '';
+  if (raw.length <= MAX_TEXT) return prefix;
+  const diagnostic = /^\s*FAIL\s+\S/m.exec(raw) ??
+    /^\s*(?:AssertionError:|(?:SCRIPT )?ERROR:|Error:)\s*\S/im.exec(raw);
+  if (!diagnostic) return prefix;
+  const excerpt = raw.slice(diagnostic.index, diagnostic.index + 1000).trimStart();
+  if (!excerpt || prefix.includes(excerpt)) return prefix;
+  // A warning-only prefix is not evidence of the cause of a later failed assertion.
+  return diagnostic.index >= MAX_TEXT ? `Relevant failure excerpt:\n${excerpt}` : `${prefix}\nRelevant failure excerpt:\n${excerpt}`;
+}
+
 function signature(event: ToolObservation): string {
   return `${event.toolName}|${failureText(event).toLowerCase().replace(/\bline\s+\d+\b/g, 'line #').replace(/\b\d+\b/g, '#').replace(/\s+/g, ' ').slice(0, 120)}`;
 }
@@ -264,7 +282,7 @@ export class PiSitterEngine {
         if (previous) previous.count++;
         else bounded(this.failureSignatures, { signature: sig, count: 1, epoch: this.failureEpoch }, MAX_SIGNATURES);
         const count = previous?.count ?? 1;
-        if (count >= 2) return this.emit({ type: 'T1', tool: event.toolName, evidence: `${count} equivalent failures: ${failureText(event)}`, key: `T1:${sig}:${this.failureEpoch}` });
+        if (count >= 2) return this.emit({ type: 'T1', tool: event.toolName, evidence: `${count} equivalent failures: ${triggerFailureText(event)}`, key: `T1:${sig}:${this.failureEpoch}` });
         return;
       }
       const noChangeEvidence = classification.kind === 'NO_CHANGE' ? classification.reason : undefined;

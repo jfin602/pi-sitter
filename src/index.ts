@@ -19,6 +19,7 @@ import { configuredVerifier } from './verifier.ts';
 import type { ApprovedVerifier } from './verifier.ts';
 import { checkpointContext, selectCheckpoint, type CheckpointRequest } from './checkpoints.ts';
 import { discoverProjectTestCommand, installedPiSitterVersion, type TestDiscovery } from './test-discovery.ts';
+import { InterventionLifecycle, type InterventionEvent } from './intervention-lifecycle.ts';
 
 const STATUS_KEY = 'pi-sitter-status';
 const WIDGET_KEY = 'pi-sitter-panel';
@@ -26,6 +27,7 @@ const EVENT_TYPE = 'pi-sitter-event';
 const MODE_TYPE = 'pi-sitter-mode';
 const CALL_TYPE = 'pi-sitter-call';
 const OUTCOME_TYPE = 'pi-sitter-outcome';
+const INTERVENTION_TYPE = 'pi-sitter-intervention';
 const ADVISORY_TYPE = 'pi-sitter-advisory';
 const VERIFICATION_TYPE = 'pi-sitter-verification';
 const VERIFICATION_PENDING_TYPE = 'pi-sitter-verification-pending';
@@ -102,6 +104,7 @@ function supervisorCard(theme: Theme, card: SupervisorCard, width: number): stri
 }
 
 interface OutcomeEntry {
+  interventionId?: string;
   kind: InferenceOutcome['kind'] | 'delivered' | 'duplicate' | 'delivery_failed';
   source?: 'model' | 'fallback';
   trigger: string;
@@ -177,6 +180,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     const pendingArgs = new Map<string, { preview: string; signature: string }>();
     const terminating = new Set<string>();
     const adviceKeys = new Set<string>();
+    const interventions = new InterventionLifecycle();
     const workerToolNames: string[] = [];
     let pending: Trigger | undefined;
     let controller: AbortController | undefined;
@@ -414,15 +418,43 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     }
 
     function recordOutcome(trigger: Trigger, outcome: InferenceOutcome, kind: OutcomeEntry['kind'] = outcome.kind,
-      source?: OutcomeEntry['source']): void {
+      source?: OutcomeEntry['source'], interventionId?: string): void {
       const diagnosis = outcome.diagnosis;
       pi.appendEntry<OutcomeEntry>(OUTCOME_TYPE, {
-        kind, source, trigger: trigger.key, issue: diagnosis?.issue, evidence: diagnosis?.evidence,
+        kind, source, interventionId, trigger: trigger.key, issue: diagnosis?.issue, evidence: diagnosis?.evidence,
         nextAction: diagnosis?.next_action, confidence: diagnosis?.confidence,
         reason: outcome.reason, latencyMs: outcome.latencyMs,
         inputTokens: outcome.inputTokens, outputTokens: outcome.outputTokens,
         validation: outcome.validation,
       });
+    }
+
+    function startIntervention(trigger: Trigger): string {
+      const id = randomUUID();
+      const event: InterventionEvent = { id, phase: 'started', trigger: trigger.key, stage: engine.stage,
+        description: trigger.type === 'T4' ? 'Investigating repeated ineffective operation…' :
+          trigger.type === 'T3' ? 'Investigating saved project state…' :
+          trigger.type === 'T2' ? 'Investigating repeated setup calls…' : 'Investigating repeated tool failure…' };
+      interventions.apply(event);
+      try { pi.appendEntry(INTERVENTION_TYPE, event); } catch { /* Supervision remains advisory if display fails. */ }
+      return id;
+    }
+
+    function finishIntervention(id: string, trigger: Trigger, phase: InterventionEvent['phase'],
+      outcome: InferenceOutcome, source?: OutcomeEntry['source'], delivered = false): void {
+      const event: InterventionEvent = { id, phase, trigger: trigger.key, stage: engine.stage,
+        issue: outcome.diagnosis?.issue, evidence: outcome.diagnosis?.evidence,
+        nextAction: outcome.diagnosis?.next_action, reason: outcome.reason, source, delivered };
+      if (interventions.apply(event)) try { pi.appendEntry(INTERVENTION_TYPE, event); }
+      catch { /* A transcript write failure must not change Worker control. */ }
+    }
+
+    function cancelInterventions(reason: string, persist = true): void {
+      for (const started of interventions.active()) {
+        const event: InterventionEvent = { ...started, phase: 'cancelled', reason };
+        if (interventions.apply(event) && persist) try { pi.appendEntry(INTERVENTION_TYPE, event); }
+        catch { /* Session teardown can proceed without a transcript write. */ }
+      }
     }
 
     function fallbackFor(trigger: Trigger): Diagnosis | undefined {
@@ -576,7 +608,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       }
     }
 
-    async function diagnose(trigger: Trigger, ctx: ExtensionContext): Promise<{ outcome: InferenceOutcome; modeAtStart: PiSitterMode; stale: boolean }> {
+    async function diagnose(trigger: Trigger, ctx: ExtensionContext, interventionId?: string): Promise<{ outcome: InferenceOutcome; modeAtStart: PiSitterMode; stale: boolean }> {
       const modeAtStart = engine.mode;
       const sessionAtStart = engine.sessionId;
       if (modeAtStart === 'off' || remaining() === 0 || controller) return { outcome: { kind: 'canceled', latencyMs: 0, reason: 'supervision disabled, busy, or budget exhausted' }, modeAtStart, stale: false };
@@ -613,7 +645,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           if (outcome.kind === 'failed' || outcome.kind === 'timeout') failed++;
           if (outcome.invalidOutput && attempt === 0 && remaining() > 0) {
             lastRejectedReason = outcome.reason?.slice(0, 140) ?? 'invalid output';
-            recordOutcome(trigger, outcome);
+            recordOutcome(trigger, outcome, outcome.kind, undefined, interventionId);
             view.finish('error', `Diagnosis rejected: ${outcome.reason ?? 'invalid output'}; retrying format`);
             render(ctx);
             continue;
@@ -669,6 +701,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     pi.registerEntryRenderer<OutcomeEntry>(OUTCOME_TYPE, (entry, { expanded }, theme) => {
       const data = entry.data;
       if (!data) return;
+      if (data.interventionId && interventions.hasStart(data.interventionId)) return;
       return { render(width: number) { return (expanded || data.kind === 'delivered' || data.kind === 'delivery_failed' || data.kind === 'failed' || data.kind === 'timeout') ?
         supervisorCard(theme, {
           status: data.kind.toUpperCase(),
@@ -676,6 +709,30 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           details: expanded && data.nextAction ? [`Evidence: ${data.evidence ?? '(none)'}`, `Next: ${data.nextAction}`] : [],
           tone: data.kind === 'delivery_failed' || data.kind === 'failed' || data.kind === 'timeout' ? 'failure' : 'normal',
         }, width) : []; }, invalidate() {} };
+    });
+    pi.registerEntryRenderer<InterventionEvent>(INTERVENTION_TYPE, (entry, { expanded }, theme) => {
+      const saved = entry.data;
+      if (!saved?.id) return;
+      if (saved.phase !== 'started' && interventions.hasStart(saved.id)) return;
+      if (saved.phase !== 'started' && interventions.get(saved.id) !== saved) return;
+      return { render(width: number) {
+        const state = interventions.get(saved.id) ?? saved;
+        const pending = state.phase === 'started';
+        const summary = pending ? `${state.description ?? 'Investigating trigger…'} ◌` :
+          state.phase === 'failed' || state.phase === 'cancelled' ?
+            state.reason ?? state.issue ?? 'Supervision ended without a result' :
+            state.issue ?? state.reason ?? 'No diagnosis returned';
+        return supervisorCard(theme, { stage: state.stage,
+          status: pending ? 'INVESTIGATING' : state.phase === 'completed' ?
+            state.delivered ? 'GUIDANCE' : 'DIAGNOSED' : state.phase.toUpperCase(),
+          summary,
+          details: !pending ? [state.nextAction && `Next: ${state.nextAction}`,
+            expanded && state.evidence && `Evidence: ${state.evidence}`,
+            expanded && state.reason && `Outcome: ${state.reason}`]
+            .filter((value): value is string => !!value) : [],
+          tone: pending || state.phase === 'cancelled' ? 'pending' : state.phase === 'failed' ? 'failure' : 'normal',
+        }, width);
+      }, invalidate() {} };
     });
     pi.registerMessageRenderer(ADVISORY_TYPE, (message, _options, theme) => ({
       render(width: number) {
@@ -802,6 +859,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
 
     pi.on('session_start', (_event, ctx) => {
       try {
+        cancelInterventions('Session changed during supervision', false);
         controller?.abort(new Error('Pi Sitter session changed'));
         verificationController?.abort(new Error('Pi Sitter session changed'));
         analysisController?.abort(new Error('Pi Sitter session changed'));
@@ -811,6 +869,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         pendingArgs.clear();
         terminating.clear();
         adviceKeys.clear();
+        interventions.clear();
         workerToolNames.length = 0;
         pending = undefined;
         controller = undefined;
@@ -855,6 +914,8 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
             if (saved.stage === stage && typeof saved.task === 'string' && saved.task.length <= 65536) historicalTask = saved.task;
           }
           if (entry.customType === MODE_TYPE && (entry.data === 'off' || entry.data === 'shadow' || entry.data === 'active')) engine.setMode(entry.data);
+          if (entry.customType === INTERVENTION_TYPE && entry.data && typeof entry.data === 'object')
+            interventions.apply(entry.data as InterventionEvent);
           if (entry.customType === EVENT_TYPE && entry.data && typeof entry.data === 'object') engine.restoreTrigger(entry.data as Trigger);
           if (entry.customType === CALL_TYPE) calls++;
           if (entry.customType === DELIVERY_CONFIRM_TYPE) confirmedDeliveries++;
@@ -925,6 +986,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
             if (saved.kind === 'delivered' && saved.issue && saved.nextAction) adviceKeys.add(`${saved.issue.toLowerCase()}|${saved.nextAction.toLowerCase()}`);
           }
         }
+        interventions.interruptPending('Supervision ended before a result was recorded');
         for (const [id, state] of verificationCards) if (!state) verificationCards.set(id, 'interrupted');
         for (const [id, state] of recoveryCards) if (!state) recoveryCards.set(id, 'interrupted');
         const supplied = dependencies.loadControllerContext?.(stage, ctx.cwd);
@@ -1113,10 +1175,14 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       const trigger = pending;
       pending = undefined;
       if (event.outcome !== 'completed' || engine.mode === 'off') return;
+      const interventionId = startIntervention(trigger);
+      const interventionSessionId = engine.sessionId;
+      if (ctx.hasUI) try { ctx.ui.setWorkingMessage('Pi Sitter investigating…'); }
+      catch { /* The transcript event remains authoritative. */ }
       try {
         const safeContinuation = event.message.role === 'assistant' && event.message.stopReason === 'toolUse' && event.toolResults.length > 0 &&
           !event.toolResults.every(result => terminating.has(result.toolCallId));
-        const diagnosed = remaining() > 0 ? await diagnose(trigger, ctx) : undefined;
+        const diagnosed = remaining() > 0 ? await diagnose(trigger, ctx, interventionId) : undefined;
         if (diagnosed?.stale) return;
         terminating.clear();
         const modelOutcome = diagnosed?.outcome;
@@ -1140,13 +1206,17 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
             view.finish('error', outcome.reason ?? 'Diagnosis failed; no grounded fallback available');
             ctx.ui.notify(`Pi Sitter diagnosis failed: ${outcome.reason ?? 'no grounded fallback available'}`, 'warning');
           }
-          try { recordOutcome(trigger, outcome, outcome.kind, source); render(ctx); } catch { /* Metadata is best effort. */ }
+          finishIntervention(interventionId, trigger, outcome.kind === 'canceled' ? 'cancelled' :
+            outcome.kind === 'ready' || outcome.kind === 'abstained' ? 'completed' : 'failed', outcome, source);
+          try { recordOutcome(trigger, outcome, outcome.kind, source, interventionId); render(ctx); } catch { /* Metadata is best effort. */ }
           return;
         }
         if (!safeContinuation) {
           failedDeliveries++;
           view.finish('error', 'Advisory could not enter a continuing Worker turn');
-          recordOutcome(trigger, outcome, 'delivery_failed', source);
+          finishIntervention(interventionId, trigger, 'failed', { ...outcome,
+            reason: 'Advisory could not enter a continuing Worker turn' }, source);
+          recordOutcome(trigger, outcome, 'delivery_failed', source, interventionId);
           render(ctx);
           return;
         }
@@ -1154,7 +1224,9 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         const adviceKey = `${diagnosis.issue.toLowerCase()}|${diagnosis.next_action.toLowerCase()}`;
         if (adviceKeys.has(adviceKey)) {
           view.finish('abstained', 'Duplicate advisory suppressed');
-          recordOutcome(trigger, outcome, 'duplicate', source);
+          finishIntervention(interventionId, trigger, 'completed', { ...outcome,
+            reason: 'Duplicate advisory suppressed' }, source);
+          recordOutcome(trigger, outcome, 'duplicate', source, interventionId);
           render(ctx);
           return;
         }
@@ -1168,15 +1240,21 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         repeatedAfterAdvice = 0;
         view.finish('delivered', `${diagnosis.issue} — ${diagnosis.next_action}`);
         supervisorActivity = source === 'fallback' ? 'Fallback delivered; Worker continuing' : 'Advisory delivered; Worker continuing';
-        try { recordOutcome(trigger, outcome, 'delivered', source); render(ctx); } catch { /* Metadata is best effort. */ }
         const content = advisoryText(trigger, outcome);
+        finishIntervention(interventionId, trigger, 'completed', outcome, source, true);
+        try { recordOutcome(trigger, outcome, 'delivered', source, interventionId); render(ctx); } catch { /* Metadata is best effort. */ }
         awaitingContext.add(content);
         return { entries: [...event.entries, { type: 'custom_message' as const,
           customType: ADVISORY_TYPE, content, display: false } ] };
       } catch (error) {
         failedDeliveries++;
-        view.finish('error', `Delivery failed: ${error instanceof Error ? error.message.slice(0, 100) : 'unknown error'}`);
+        const reason = `Delivery failed: ${error instanceof Error ? error.message.slice(0, 100) : 'unknown error'}`;
+        finishIntervention(interventionId, trigger, 'failed', { kind: 'failed', latencyMs: 0, reason });
+        view.finish('error', reason);
         render(ctx);
+      } finally {
+        if (ctx.hasUI && engine.sessionId === interventionSessionId) try { ctx.ui.setWorkingMessage(); }
+        catch { /* UI cleanup must not change Worker control. */ }
       }
     });
 
@@ -1346,6 +1424,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
 
     pi.on('session_shutdown', (_event, ctx) => {
       try {
+        cancelInterventions('Session ended during supervision');
         controller?.abort(new Error('Pi Sitter session ended'));
         verificationController?.abort(new Error('Pi Sitter session ended'));
         analysisController?.abort(new Error('Pi Sitter session ended'));
@@ -1360,6 +1439,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         pendingArgs.clear();
         terminating.clear();
         adviceKeys.clear();
+        interventions.clear();
         workerToolNames.length = 0;
         controller = undefined;
         verificationController = undefined;
@@ -1458,6 +1538,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
             }
           } else if (command === 'off' || command === 'shadow' || command === 'on') {
             if (command === 'off') {
+              cancelInterventions('Pi Sitter disabled during supervision');
               controller?.abort(new Error('Pi Sitter disabled'));
               verificationController?.abort(new Error('Pi Sitter disabled'));
               analysisController?.abort(new Error('Pi Sitter disabled'));

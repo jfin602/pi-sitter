@@ -24,6 +24,8 @@ At session start, a muted transcript entry shows the installed Pi Sitter version
 
 In Active mode, Pi Sitter observes tool results and triggers a short diagnosis only after repeated errors, repeated setup without progress, a supplied milestone failure, or repeated no-op receipts. It does not start a supervisor model session when the extension loads. Diagnosis uses the worker's selected Pi model; configure that model through Pi. No LM Studio model, local model path, or benchmark stage is required.
 
+When a trigger starts an actual diagnosis, Pi Sitter writes a model-excluded `pi-sitter-intervention` start entry before awaiting the supervisor. Its muted transcript card stays in place as a matching terminal event updates it to guidance, failure, or cancellation. The existing Pi working indicator names Pi Sitter during the attempt. These lifecycle events carry a stable ID and are replayed from the session branch; ordinary observed tool calls create no intervention card.
+
 The default task label is `current`. Set `PI_SITTER_STAGE` only if your integration uses named stages. `PI_SITTER_MODE` may be `off`, `shadow`, or `active` at startup. `PI_SITTER_LIMITS` accepts a JSON object with bounded budgets such as `maxInferenceAttempts`, `maxRecoveryAttempts`, `maxCompletionVerifications`, and `timeoutMs`.
 
 ## Completion verification

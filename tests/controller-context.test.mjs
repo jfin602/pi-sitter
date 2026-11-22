@@ -47,6 +47,20 @@ test('mandatory A+B cannot be replaced by A or development test rows', () => {
   assert.equal(decideCompletion(normalizeGateReport(run([row('A'), row('B', 'SKIP')]), trusted)).decision, 'UNVERIFIED');
 });
 
+test('Stage 01-only result cannot substantiate a current Stage 02 report', () => {
+  const stage02 = validateControllerContext({ ...context(), stage: '02', taskId: 'task-stage-02',
+    suite: { ...context().suite, id: 'suite-stage-02' } }, '02');
+  const stage01Result = { ...run(), taskId: 'task-stage-01', stage: '01',
+    suite: { ...run().suite, id: 'suite-stage-01' },
+    gates: [{ id: 'A', tests: [{ id: 'scored-A', result: 'PASS', evidence: 'Stage 01 only passed' }] }] };
+  assert.throws(() => normalizeGateReport(stage01Result, stage02), /task, stage, schema, or source mismatch/);
+  // Worker-authored development results cannot stand in for the protected Stage 02 rows.
+  const workerResult = { ...run(), taskId: stage02.taskId, stage: stage02.stage,
+    suite: { id: stage02.suite.id, version: stage02.suite.version, digest: stage02.suite.digest },
+    gates: [{ id: 'A', tests: [{ id: 'worker-vitest-stage02', result: 'PASS', evidence: 'worker test passed' }] }, row('B')] };
+  assert.throws(() => normalizeGateReport(workerResult, stage02), /duplicate, unknown, or malformed test row/);
+});
+
 test('task, suite, source, duplicate, unknown and caller criteria changes fail closed', () => {
   const trusted = validateControllerContext(context(), '04');
   for (const [mutate, expected] of [
