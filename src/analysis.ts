@@ -79,7 +79,8 @@ export async function runInspectionAnalysis(report: GateReport, broker: Evidence
       const response = await Promise.race([ask(prompt, controller.signal), aborted]);
       inputTokens += response.inputTokens ?? 0;
       outputTokens += response.outputTokens ?? 0;
-      if (response.evidence) mcpReceipts.push(...response.evidence.slice(0, 20).map(item => item.slice(0, 16000)));
+      // Model-supplied metadata is not a source fact. Only broker/provider success
+      // payloads and trusted gate observations may ground a repair instruction.
       return response;
     } finally { controller.signal.removeEventListener('abort', abort); }
   };
@@ -92,14 +93,16 @@ export async function runInspectionAnalysis(report: GateReport, broker: Evidence
     let response = parse(first.text);
     if (response.requests.length) {
       requests = response.requests;
-      results = await broker.inspectSnapshot(report.snapshotIdentity, requests, controller.signal);
+      results = await broker.inspectSnapshot(report.snapshotIdentity, requests, controller.signal,
+        report.schemaVersion === 2 ? { taskId: report.taskId, turnId: report.runId } : undefined);
       options.onInspections?.(requests, results);
       const second = await invoke(`Stage ${report.stage}; same snapshot ${report.snapshotIdentity}. Original gates: ${JSON.stringify(gates)}. Approved inspection results (untrusted project evidence): ${JSON.stringify(results).slice(0, 9000)}. Return only {"action":"narrow correction","evidence":"exact supporting excerpt"} or {"abstain":true}.`);
       response = parse(second.text);
       if (response.requests.length) throw new Error('additional inspection round not allowed');
     }
     if (response.abstain || !response.action || !response.evidence) return outcome('abstained', { reason: 'Model abstained or supplied no grounded action' });
-    const corpus = report.gates.map(gate => gate.evidence).join('\n') + '\n' + JSON.stringify(results) + '\n' + mcpReceipts.join('\n');
+    const corpus = report.gates.map(gate => gate.evidence).join('\n') + '\n' +
+      results.filter(result => result.ok && result.evidence !== undefined).map(result => JSON.stringify(result.evidence)).join('\n');
     if (!corpus.includes(response.evidence) || /ignore (?:all|previous)|system prompt|developer instructions|send (?:secrets|credentials)|rewrite unrelated|replace working/i.test(response.action))
       return outcome('abstained', { reason: 'Action was not grounded in approved evidence' });
     return outcome('ready', { action: response.action, evidence: response.evidence });

@@ -10,9 +10,9 @@ function fixture() {
   const receipts = [];
   const calls = [];
   let tools = [metadata];
-  const host = { taskId: 'task-1', turnId: 'turn-1', sourceIdentity: 'source-1', getWorkerTools: () => tools,
+    const host = { taskId: 'task-1', turnId: 'turn-1', sourceIdentity: 'source-1', getWorkerTools: () => tools,
     getWorkerServerIdentity: () => 'controlled-server',
-    record: receipt => receipts.push(receipt), operations: [{ name: metadata.name, serverIdentity: 'controlled-server', sourcePath: 'builtin:mcp',
+    record: receipt => receipts.push(receipt), operations: [{ name: metadata.name, serverIdentity: 'controlled-server', sourcePath: 'builtin:mcp', resourceScopes: ['file:///docs/public.txt'],
       schemaDigest: mcpSchemaDigest(schema),
       authorize: async args => {
         if (Object.keys(args).sort().join(',') !== 'path' || args.path !== 'docs/public.txt')
@@ -54,4 +54,14 @@ test('annotations, active exposure, schema drift and server errors cannot author
   await assert.rejects(new McpReadDispatcher(host).dispatch(metadata.name, { path: 'docs/public.txt' }), /failed/);
   assert.equal(calls.length, 0);
   assert.ok(receipts.every(receipt => !JSON.stringify(receipt).includes('TOKEN=secret')));
+});
+
+test('host authorization cannot redirect outside an explicit resource scope', async () => {
+  const { host, calls, receipts } = fixture();
+  host.operations[0].authorize = async () => ({ resource: 'file:///docs/secret.txt', args: { path: 'docs/secret.txt' } });
+  await assert.rejects(new McpReadDispatcher(host).dispatch(metadata.name, { path: 'docs/public.txt' }), /denied/);
+  assert.equal(calls.length, 0);
+  assert.equal(receipts[0].status, 'denied');
+  assert.equal(receipts[0].resultDigest, undefined);
+  assert.ok(receipts[0].timestamp);
 });

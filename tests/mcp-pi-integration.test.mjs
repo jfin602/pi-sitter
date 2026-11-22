@@ -70,7 +70,7 @@ test('real Pi worker MCP and independent vetted host read reach the controlled s
     const dispatcher = new McpReadDispatcher({ taskId: 'task', turnId: 'turn', sourceIdentity: 'source',
       getWorkerTools: () => session.getAllTools(), getWorkerServerIdentity: () => 'trusted-fixture',
       record: receipt => receipts.push(receipt),
-      operations: [{ name: read.name, serverIdentity: 'trusted-fixture', sourcePath: read.sourceInfo.path, schemaDigest: mcpSchemaDigest(read.parameters),
+      operations: [{ name: read.name, serverIdentity: 'trusted-fixture', sourcePath: read.sourceInfo.path, schemaDigest: mcpSchemaDigest(read.parameters), resourceScopes: ['fixture://public'],
         authorize: async args => {
           if (Object.keys(args).join(',') !== 'path' || args.path !== 'public') throw new Error('denied');
           return { resource: 'fixture://public', args: { path: 'public' } };
@@ -90,7 +90,7 @@ test('real Pi worker MCP and independent vetted host read reach the controlled s
       allowedMcpTools: [], instructions: '', mcpRead: { taskId: 'task', turnId: 'turn', sourceIdentity: 'source',
         getWorkerTools: () => session.getAllTools(), getWorkerServerIdentity: () => 'trusted-fixture',
         record: receipt => receipts.push(receipt),
-        operations: [{ name: read.name, serverIdentity: 'trusted-fixture', sourcePath: read.sourceInfo.path, schemaDigest: mcpSchemaDigest(read.parameters),
+        operations: [{ name: read.name, serverIdentity: 'trusted-fixture', sourcePath: read.sourceInfo.path, schemaDigest: mcpSchemaDigest(read.parameters), resourceScopes: ['fixture://public'],
           authorize: async () => ({ resource: 'fixture://public', args: { path: 'public' } }),
           execute: async (args, signal) => hostClient.callTool('read', args, { signal }),
           sanitize: result => result.content[0].text }] },

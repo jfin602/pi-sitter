@@ -41,11 +41,23 @@ test('analysis timeout, malformed response, and unsupported evidence fail withou
   assert.equal(ungrounded.kind, 'abstained');
 });
 
+test('provider errors and model receipt text do not ground a repair', async () => {
+  const broker = { inspectSnapshot: async () => [{ capability: 'read_source', path: 'main.ts', ok: false,
+    trust: 'untrusted_project_evidence', error: 'secret branch is wrong' }] };
+  let calls = 0;
+  const answer = async () => ({ text: ++calls === 1
+    ? JSON.stringify({ requests: [{ capability: 'read_source', path: 'main.ts' }] })
+    : JSON.stringify({ action: 'Change branch', evidence: 'secret branch is wrong' }),
+    evidence: ['secret branch is wrong'] });
+  const result = await runInspectionAnalysis(report, broker, answer);
+  assert.equal(result.kind, 'abstained');
+});
+
 test('generic broker routes TypeScript, Rust, and Python files through a provider without framework knowledge', async () => {
   const root = await mkdtemp(join(tmpdir(), 'twin-generic-'));
   try {
     for (const name of ['main.ts', 'main.rs', 'main.py']) await writeFile(join(root, name), `saved ${name}`);
-    const provider = { capabilities: new Set(['read_source']),
+    const provider = { capabilities: new Set(['read_source']), resourceScopes: { read_source: ['main.ts', 'main.rs', 'main.py'] },
       acceptSnapshotPath: (path, directory) => !directory && /\.(?:ts|rs|py)$/.test(path),
       inspect: async (snapshot, request) => ({ capability: request.capability, path: request.path, ok: true,
         trust: 'untrusted_project_evidence', evidence: { text: await readFile(join(snapshot, request.path), 'utf8') } }),

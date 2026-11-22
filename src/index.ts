@@ -1072,7 +1072,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           if (report.schemaVersion === 2 && dependencies.mcpReadHost) {
             const supplied = dependencies.mcpReadHost(report.taskId, report.snapshotIdentity);
             if (supplied) {
-              const snapshot = await broker.openSnapshot(current.signal);
+              const snapshot = await broker.openSnapshot(current.signal, { taskId: report.taskId, turnId: report.runId });
               if (snapshot.identity !== report.snapshotIdentity) {
                 await snapshot.close();
                 throw new Error('MCP research snapshot is stale');

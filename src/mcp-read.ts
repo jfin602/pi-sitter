@@ -15,6 +15,8 @@ export interface VettedMcpRead {
   /** Exact Pi source path and schema identity approved by the embedding host. */
   sourcePath: string;
   schemaDigest: string;
+  /** Exact canonical resource identifiers approved for this task and gate. */
+  resourceScopes: readonly string[];
   /** Resolve and authorize the concrete resource and every argument before execution. */
   authorize(args: Record<string, unknown>, identity: { taskId: string; sourceIdentity: string }):
     Promise<{ resource: string; args: Record<string, unknown> }>;
@@ -34,6 +36,8 @@ export interface McpReadReceipt {
   resourceDigest?: string;
   argsDigest: string;
   resultDigest?: string;
+  timestamp: string;
+  evidenceRef?: string;
   status: 'allowed' | 'denied' | 'error';
   reason?: string;
 }
@@ -51,6 +55,9 @@ export interface McpReadHost {
 }
 
 export function mcpSchemaDigest(schema: unknown): string { return sha(JSON.stringify(schema)); }
+function canonicalResource(value: string): boolean {
+  try { return new URL(value).href === value; } catch { return false; }
+}
 
 function matchingTool(host: McpReadHost, operation: VettedMcpRead): WorkerTool | undefined {
   const matches = host.getWorkerTools().filter(tool => tool.name === operation.name);
@@ -75,7 +82,9 @@ export function discoverMcpReads(host: McpReadHost): { allowed: string[]; unavai
       unavailable[operation.name] = 'duplicate host policy';
     } else if (!matchingTool(host, operation)) {
       unavailable[operation.name] = 'worker tool, source, schema, or exposure mismatch';
-    } else if (typeof operation.authorize !== 'function' || typeof operation.execute !== 'function' ||
+    } else if (!Array.isArray(operation.resourceScopes) || !operation.resourceScopes.length ||
+      operation.resourceScopes.some(scope => typeof scope !== 'string' || !canonicalResource(scope)) ||
+      typeof operation.authorize !== 'function' || typeof operation.execute !== 'function' ||
       typeof operation.sanitize !== 'function') {
       unavailable[operation.name] = 'incomplete host operation review';
     } else {
@@ -99,7 +108,8 @@ export class McpReadDispatcher {
     let phase: 'policy' | 'execute' = 'policy';
     const receipt = (status: McpReadReceipt['status'], reason?: string, resultDigest?: string) => {
       this.host.record({ taskId: this.host.taskId, turnId: this.host.turnId, sourceIdentity: this.host.sourceIdentity,
-        tool: name.slice(0, 128), sourcePath, serverDigest, resourceDigest, argsDigest, resultDigest, status, reason });
+        tool: name.slice(0, 128), sourcePath, serverDigest, resourceDigest, argsDigest, resultDigest,
+        timestamp: new Date().toISOString(), evidenceRef: status === 'allowed' ? resultDigest : undefined, status, reason });
     };
     try {
       const serialized = JSON.stringify(raw);
@@ -107,7 +117,8 @@ export class McpReadDispatcher {
         throw new Error('invalid or oversized arguments');
       argsDigest = sha(serialized);
       const operation = this.host.operations.find(candidate => candidate.name === name);
-      if (!operation || !matchingTool(this.host, operation) ||
+      if (!operation || !matchingTool(this.host, operation) || !Array.isArray(operation.resourceScopes) ||
+          !operation.resourceScopes.length ||
           this.host.operations.filter(candidate => candidate.name === name).length !== 1)
         throw new Error('operation unavailable: no matching vetted worker MCP capability');
       sourcePath = operation.sourcePath;
@@ -128,6 +139,8 @@ export class McpReadDispatcher {
             !resolved.args || typeof resolved.args !== 'object' || Array.isArray(resolved.args) ||
             JSON.stringify(resolved.args).length > MAX_ARGS)
           throw new Error('host did not resolve an approved resource');
+        if (!canonicalResource(resolved.resource) ||
+            !operation.resourceScopes.includes(resolved.resource)) throw new Error('resource outside approved scope');
         resourceDigest = sha(resolved.resource);
         phase = 'execute';
         const result = await Promise.race([operation.execute(resolved.args, controller.signal), canceled]);
