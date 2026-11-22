@@ -10,6 +10,8 @@ import { adaptVitestReport } from './vitest-report.ts';
 import { validateControllerContext, type ControllerContext } from './controller-context.ts';
 import { createRecoveryPlan, decideCompletion, noProgressRecoveryPrompt, type CompletionRecord, type RecoveryPlan } from './completion.ts';
 import { EvidenceBroker } from './broker.ts';
+import { openSupervisorSession } from './supervisor-session.ts';
+import type { McpReadHost } from './mcp-read.ts';
 import { modelAnalysisAsk, runInspectionAnalysis, type AnalysisOutcome } from './analysis.ts';
 import { buildPrompt, type PromptBuilder } from './prompt.ts';
 import { configuredVerifier } from './verifier.ts';
@@ -127,6 +129,8 @@ export interface PiSitterDependencies {
   loadCheckpoint?: (stage: string, projectRoot: string) => CheckpointRequest | undefined;
   recoveryPlan?: typeof createRecoveryPlan;
   evidenceBroker?: (projectRoot: string) => EvidenceBroker;
+  /** Trusted embedding-host review and dispatcher. Omitted operations remain unavailable. */
+  mcpReadHost?: (taskId: string, sourceIdentity: string) => Pick<McpReadHost, 'operations' | 'record' | 'getWorkerServerIdentity'> | undefined;
   shouldAnalyze?: (report: GateReport) => boolean;
   analyze?: typeof runInspectionAnalysis;
   milestoneValidators?: Record<string, Validator>;
@@ -1062,9 +1066,38 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         render(ctx);
         try {
           const analyze = dependencies.analyze ?? runInspectionAnalysis;
-          const result = await analyze(report, dependencies.evidenceBroker(ctx.cwd), modelAnalysisAsk(ctx, dependencies.loadedCheck), current.signal,
+          const broker = dependencies.evidenceBroker(ctx.cwd);
+          let ask = modelAnalysisAsk(ctx, dependencies.loadedCheck);
+          let closeResearch: (() => Promise<void>) | undefined;
+          if (report.schemaVersion === 2 && dependencies.mcpReadHost) {
+            const supplied = dependencies.mcpReadHost(report.taskId, report.snapshotIdentity);
+            if (supplied) {
+              const snapshot = await broker.openSnapshot(current.signal);
+              if (snapshot.identity !== report.snapshotIdentity) {
+                await snapshot.close();
+                throw new Error('MCP research snapshot is stale');
+              }
+              try {
+                const session = await openSupervisorSession(ctx, snapshot, {
+                  allowedMcpTools: [], instructions: 'Investigate only the unresolved task gates.',
+                  mcpRead: { ...supplied, taskId: report.taskId, turnId: report.runId,
+                    sourceIdentity: report.snapshotIdentity,
+                    getWorkerTools: () => pi.getAllTools() },
+                }, current.signal);
+                ask = async prompt => {
+                  const turn = await session.prompt(prompt);
+                  return { text: turn.text, evidence: turn.receipts.filter(receipt =>
+                    receipt.tool === 'pi_sitter_mcp_read').map(receipt => receipt.text) };
+                };
+                closeResearch = async () => { await session.close(); await snapshot.close(); };
+              } catch (error) { await snapshot.close(); throw error; }
+            }
+          }
+          let result: AnalysisOutcome;
+          try { result = await analyze(report, broker, ask, current.signal,
             { onInspections: (requests, results) => pi.appendEntry(EVIDENCE_REQUEST_TYPE,
-              { snapshotIdentity: report.snapshotIdentity, requests, results }) });
+              { snapshotIdentity: report.snapshotIdentity, requests, results }) }); }
+          finally { await closeResearch?.(); }
           if (!current.signal.aborted && sessionId === engine.sessionId) {
             completionDiagnosisCalls += Math.min(1, result.calls);
             recoveryGenerationCalls += Math.max(0, result.calls - 1);

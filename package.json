@@ -1,6 +1,6 @@
 {
   "name": "pi-sitter",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "An on-demand AI supervisor for the Pi Coding Agent",
   "type": "module",
   "license": "MIT",
@@ -24,6 +24,7 @@
     ".": "./src/index.ts",
     "./broker": "./src/broker.ts",
     "./gates": "./src/gates.ts",
+    "./mcp-read": "./src/mcp-read.ts",
     "./supervisor-session": "./src/supervisor-session.ts"
   },
   "files": [

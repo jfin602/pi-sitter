@@ -10,12 +10,13 @@ export interface AnalysisOutcome {
   reason?: string;
   requests: unknown[];
   results: EvidenceResult[];
+  mcpReceipts?: string[];
   calls: number;
   inputTokens: number;
   outputTokens: number;
   elapsedMs: number;
 }
-export type AskAnalysis = (prompt: string, signal: AbortSignal) => Promise<{ text: string; inputTokens?: number; outputTokens?: number }>;
+export type AskAnalysis = (prompt: string, signal: AbortSignal) => Promise<{ text: string; inputTokens?: number; outputTokens?: number; evidence?: string[] }>;
 
 export function modelAnalysisAsk(ctx: ExtensionContext, loadedCheck: LoadedCheck = checkLoadedModel): AskAnalysis {
   return async (prompt, signal) => {
@@ -63,9 +64,9 @@ export async function runInspectionAnalysis(report: GateReport, broker: Evidence
   const relay = () => controller.abort(signal?.reason);
   signal?.addEventListener('abort', relay, { once: true });
   if (signal?.aborted) relay();
-  let requests: unknown[] = [], results: EvidenceResult[] = [];
+  let requests: unknown[] = [], results: EvidenceResult[] = [], mcpReceipts: string[] = [];
   const outcome = (kind: AnalysisOutcome['kind'], extra: Partial<AnalysisOutcome> = {}): AnalysisOutcome => ({
-    kind, requests, results, calls, inputTokens, outputTokens, elapsedMs: Math.round(performance.now() - started), ...extra });
+    kind, requests, results, mcpReceipts, calls, inputTokens, outputTokens, elapsedMs: Math.round(performance.now() - started), ...extra });
   const invoke = async (prompt: string) => {
     calls++;
     let abort!: () => void;
@@ -78,6 +79,7 @@ export async function runInspectionAnalysis(report: GateReport, broker: Evidence
       const response = await Promise.race([ask(prompt, controller.signal), aborted]);
       inputTokens += response.inputTokens ?? 0;
       outputTokens += response.outputTokens ?? 0;
+      if (response.evidence) mcpReceipts.push(...response.evidence.slice(0, 20).map(item => item.slice(0, 16000)));
       return response;
     } finally { controller.signal.removeEventListener('abort', abort); }
   };
@@ -97,7 +99,7 @@ export async function runInspectionAnalysis(report: GateReport, broker: Evidence
       if (response.requests.length) throw new Error('additional inspection round not allowed');
     }
     if (response.abstain || !response.action || !response.evidence) return outcome('abstained', { reason: 'Model abstained or supplied no grounded action' });
-    const corpus = report.gates.map(gate => gate.evidence).join('\n') + '\n' + JSON.stringify(results);
+    const corpus = report.gates.map(gate => gate.evidence).join('\n') + '\n' + JSON.stringify(results) + '\n' + mcpReceipts.join('\n');
     if (!corpus.includes(response.evidence) || /ignore (?:all|previous)|system prompt|developer instructions|send (?:secrets|credentials)|rewrite unrelated|replace working/i.test(response.action))
       return outcome('abstained', { reason: 'Action was not grounded in approved evidence' });
     return outcome('ready', { action: response.action, evidence: response.evidence });
