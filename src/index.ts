@@ -18,6 +18,7 @@ import { buildPrompt, type PromptBuilder } from './prompt.ts';
 import { configuredVerifier } from './verifier.ts';
 import type { ApprovedVerifier } from './verifier.ts';
 import { checkpointContext, selectCheckpoint, type CheckpointRequest } from './checkpoints.ts';
+import { discoverProjectTestCommand, installedPiSitterVersion, type TestDiscovery } from './test-discovery.ts';
 
 const STATUS_KEY = 'pi-sitter-status';
 const WIDGET_KEY = 'pi-sitter-panel';
@@ -41,6 +42,7 @@ const DELIVERY_FAILURE_TYPE = 'pi-sitter-delivery-unconfirmed';
 const WORKER_RECOVERY_TYPE = 'pi-sitter-worker-recovery';
 const TASK_HISTORY_TYPE = 'pi-sitter-task-history';
 const CONTROLLER_TYPE = 'pi-sitter-controller-inventory';
+const STARTUP_TYPE = 'pi-sitter-startup';
 const MAX_NO_PROGRESS_RETRIES = 1;
 type RecoveryEntry = { attempt: number; plan: RecoveryPlan; delivery: string; retry?: number; displayId?: string };
 type RecoveryRequest = { id: string; stage: string; reset: boolean; unavailable?: string };
@@ -183,6 +185,8 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     let lastReport: GateReport | undefined;
     let controllerContext: ControllerContext | undefined;
     let lastCompletion: CompletionRecord | undefined;
+    let testDiscovery: TestDiscovery = { kind: 'unknown', reason: 'Project has not been inspected' };
+    let noTestsMode = false;
     const verificationCards = new Map<string, CompletionRecord | 'interrupted' | undefined>();
     let pendingVerificationId: string | undefined;
     const recoveryCards = new Map<string, RecoveryEntry | 'interrupted' | undefined>();
@@ -366,6 +370,20 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         ctx.ui.setWidget(WIDGET_KEY, lines, { placement: 'aboveEditor' });
         lastWidget = widget;
       }
+    }
+
+    function refreshTestDiscovery(ctx: ExtensionContext): void {
+      testDiscovery = discoverProjectTestCommand(ctx.cwd);
+      noTestsMode = testDiscovery.kind === 'none' && !controllerContext &&
+        !dependencies.verify && !process.env.PI_SITTER_VERIFY_COMMAND;
+    }
+
+    function testSetupSummary(): string {
+      if (noTestsMode) return 'No test command found in known manifests; no-tests mode (completion UNVERIFIED)';
+      if (testDiscovery.kind === 'candidate')
+        return `Project test candidate: ${testDiscovery.command} (${testDiscovery.source}; not approved for verification)`;
+      if (testDiscovery.kind === 'unknown') return `Test setup undetermined: ${testDiscovery.reason}`;
+      return 'No project test command found; host verification may still be available';
     }
 
     function scheduleRender(ctx: ExtensionContext): void {
@@ -635,6 +653,18 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         stage: data.stage, status: 'TRIGGER_DETECTED', summary: `${data.type}: ${data.tool}`,
         details: [data.evidence, 'Advisory only'],
       }, width) : []; }, invalidate() {} };
+    });
+    pi.registerEntryRenderer<{ signature: string; text: string }>(STARTUP_TYPE, (entry, _options, theme) => {
+      const value = entry.data;
+      if (!value?.text) return;
+      return { render(width: number) {
+        if (width <= 0) return [];
+        const chars = Array.from(value.text);
+        const lines: string[] = [];
+        for (let offset = 0; offset < chars.length; offset += width)
+          lines.push(theme.fg('muted', chars.slice(offset, offset + width).join('')));
+        return lines;
+      }, invalidate() {} };
     });
     pi.registerEntryRenderer<OutcomeEntry>(OUTCOME_TYPE, (entry, { expanded }, theme) => {
       const data = entry.data;
@@ -955,6 +985,16 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         if (lastReport && lastCompletion?.decision === 'RECOVERY_REQUIRED' && sameAttempt(lastReport, lastCompletion))
           recoveryPlan = (dependencies.recoveryPlan ?? createRecoveryPlan)(lastReport, lastCompletion.task);
         engine.sessionId = ctx.sessionManager.getSessionId();
+        refreshTestDiscovery(ctx);
+        const version = installedPiSitterVersion();
+        const verifierConfigured = Boolean(controllerContext && (dependencies.verify ||
+          (process.env.PI_SITTER_VERIFY_COMMAND && dependencies.resolveApprovedVerifier)));
+        const text = `Pi Sitter ${version} · ${engine.mode} · ${testSetupSummary()} · Protected verification: ${verifierConfigured ? 'host configured' : 'unavailable'}`;
+        const signature = `${version}:${ctx.cwd}:${engine.mode}:${text}`;
+        if (!ctx.sessionManager.getBranch().some(entry => entry.type === 'custom' &&
+            entry.customType === STARTUP_TYPE && (entry.data as { signature?: string } | undefined)?.signature === signature))
+          try { pi.appendEntry(STARTUP_TYPE, { signature, text }); }
+          catch { /* Startup display cannot invalidate restored verification state. */ }
         lastStatus = lastWidget = '';
         render(ctx);
       } catch {
@@ -1355,10 +1395,12 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       handler: async (args, ctx) => {
         try {
           const command = args.trim().toLowerCase();
-          if (['status', 'gates', 'report', 'recover'].includes(command)) refreshCurrentContext(ctx);
+          if (['status', 'gates', 'report', 'recover', 'verify'].includes(command)) refreshCurrentContext(ctx);
           if (!command) view.toggle();
           else if (command === 'verify') {
+            refreshTestDiscovery(ctx);
             const unavailable = !ctx.isIdle() ? 'Run /sitter verify after the Worker turn completes' :
+              noTestsMode ? 'No test command found; Pi Sitter is in no-tests mode and cannot mark this task VERIFIED' :
               verificationController ? 'Pi Sitter verification is already running' :
               !engine.stage ? 'Set a task stage before verification' :
               verificationRuns >= limits.maxCompletionVerifications ? 'Completion verification budget exhausted' : undefined;
@@ -1382,15 +1424,17 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
             }
           }
           else if (command === 'status') {
-            ctx.ui.notify(`Pi Sitter ${engine.mode}; Worker ${workerState}; stage ${engine.stage || 'unset'}; gates ${lastCompletion?.decision ?? 'pending'}; ${verificationActivity}; verification ${verificationElapsedMs} ms (${verificationRuns}/${limits.maxCompletionVerifications}); recovery ${recoveryAttempts}/${limits.maxRecoveryAttempts}; diagnosis ${completionDiagnosisCalls}/1; recovery generation ${recoveryGenerationCalls}/1; unresolved ${unresolvedIds().join(', ') || 'none'}; ${attemptLabel(lastCompletion)}; status ${view.phase}${view.result ? `: ${view.result}` : ''}; last rejected ${lastRejectedReason || "none"}; triggers ${engine.triggerCount}; inference ${calls}/${limits.maxInferenceAttempts}; valid ${validDiagnoses}; model delivered ${modelAdvisories}/${limits.maxValidAdvisories}; fallback delivered ${fallbackAdvisories}/${limits.maxFallbackAdvisories}; delivered ${delivered}; confirmed ${confirmedDeliveries}; failed deliveries ${failedDeliveries}; Worker recoveries ${workerRecoveries}; abstained ${abstained}; failed ${failed}; budget ${remaining()}; tokens ${inputTokens}/${outputTokens}; latency ${totalLatencyMs} ms; observer ${engine.overheadMs.toFixed(1)} ms`, 'info');
+            refreshTestDiscovery(ctx);
+            ctx.ui.notify(`Pi Sitter ${engine.mode}; ${testSetupSummary()}; Worker ${workerState}; stage ${engine.stage || 'unset'}; gates ${lastCompletion?.decision ?? 'pending'}; ${verificationActivity}; verification ${verificationElapsedMs} ms (${verificationRuns}/${limits.maxCompletionVerifications}); recovery ${recoveryAttempts}/${limits.maxRecoveryAttempts}; diagnosis ${completionDiagnosisCalls}/1; recovery generation ${recoveryGenerationCalls}/1; unresolved ${unresolvedIds().join(', ') || 'none'}; ${attemptLabel(lastCompletion)}; status ${view.phase}${view.result ? `: ${view.result}` : ''}; last rejected ${lastRejectedReason || "none"}; triggers ${engine.triggerCount}; inference ${calls}/${limits.maxInferenceAttempts}; valid ${validDiagnoses}; model delivered ${modelAdvisories}/${limits.maxValidAdvisories}; fallback delivered ${fallbackAdvisories}/${limits.maxFallbackAdvisories}; delivered ${delivered}; confirmed ${confirmedDeliveries}; failed deliveries ${failedDeliveries}; Worker recoveries ${workerRecoveries}; abstained ${abstained}; failed ${failed}; budget ${remaining()}; tokens ${inputTokens}/${outputTokens}; latency ${totalLatencyMs} ms; observer ${engine.overheadMs.toFixed(1)} ms`, 'info');
           } else if (command === 'gates') {
             const gates = controllerContext?.suite.gates ?? [];
             ctx.ui.notify(gates.length ? `Host-provided protected gates for ${engine.stage}:\n${gates.map(gate => `${gate.id}: ${lastReport?.gates.find(row => row.id === gate.id)?.result ?? 'PENDING'} — requirements ${gate.requirementIds.join(', ')}`).join('\n')}` : 'No trusted gate contract is available for this stage', gates.length ? 'info' : 'warning');
           } else if (command === 'report') {
+            refreshTestDiscovery(ctx);
             const currentReport = sameAttempt(lastReport, lastCompletion) ? lastReport : undefined;
             const unresolved = currentReport?.gates.filter(gate => gate.result !== 'PASS') ?? [];
             const requirements = lastCompletion?.requirements ?? [];
-            ctx.ui.notify(lastCompletion ? `Stage ${lastCompletion.stage}: ${lastCompletion.decision}; ${lastCompletion.counts.PASS} PASS, ${lastCompletion.counts.FAIL} FAIL, ${lastCompletion.counts.UNVERIFIED} UNVERIFIED; ${attemptLabel(lastCompletion)}; regressions: ${lastCompletion.regressions.join(', ') || 'none'}; snapshot ${lastCompletion.snapshotIdentity}; ${lastCompletion.reason}${currentReport?.supervisorSessionFile ? `\nSupervisor Pi transcript: ${currentReport.supervisorSessionFile}` : ''}${unresolved.length ? `\nUnresolved gates:\n${unresolved.map(gate => `${gate.id} ${gate.result}: ${gate.evidence}`).join('\n')}` : ''}${requirements.length ? `\nOriginal requirements:\n${requirements.map(row => `${row.id} ${row.status}: ${row.reason}${row.evidence.length ? ` [${row.evidence.map(item => `${item.path}:${item.line}`).join(', ')}]` : ''}${row.limitations.length ? `; limitations: ${row.limitations.join('; ')}` : ''}`).join('\n')}` : ''}${currentReport?.validationLimitations.length ? `\nLimitations: ${currentReport.validationLimitations.join('; ')}` : ''}` : 'No verification report is available', lastCompletion ? 'info' : 'warning');
+            ctx.ui.notify(lastCompletion ? `Stage ${lastCompletion.stage}: ${lastCompletion.decision}; ${lastCompletion.counts.PASS} PASS, ${lastCompletion.counts.FAIL} FAIL, ${lastCompletion.counts.UNVERIFIED} UNVERIFIED; ${attemptLabel(lastCompletion)}; regressions: ${lastCompletion.regressions.join(', ') || 'none'}; snapshot ${lastCompletion.snapshotIdentity}; ${lastCompletion.reason}${currentReport?.supervisorSessionFile ? `\nSupervisor Pi transcript: ${currentReport.supervisorSessionFile}` : ''}${unresolved.length ? `\nUnresolved gates:\n${unresolved.map(gate => `${gate.id} ${gate.result}: ${gate.evidence}`).join('\n')}` : ''}${requirements.length ? `\nOriginal requirements:\n${requirements.map(row => `${row.id} ${row.status}: ${row.reason}${row.evidence.length ? ` [${row.evidence.map(item => `${item.path}:${item.line}`).join(', ')}]` : ''}${row.limitations.length ? `; limitations: ${row.limitations.join('; ')}` : ''}`).join('\n')}` : ''}${currentReport?.validationLimitations.length ? `\nLimitations: ${currentReport.validationLimitations.join('; ')}` : ''}` : noTestsMode ? `${testSetupSummary()}; no verification report is available` : 'No verification report is available', lastCompletion ? 'info' : 'warning');
           } else if (command === 'recover') {
             const unavailable = !currentRecovery() ? 'No failed gate recovery is pending' :
               !ctx.isIdle() ? 'Run /sitter recover after the Worker is idle' :

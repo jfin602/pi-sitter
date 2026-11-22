@@ -355,11 +355,30 @@ test('Late T3 advisory is recorded without requesting another Worker turn', asyn
 
 test('Observer exception leaves finalized Worker result untouched', () => {
   const h = harness();
+  const initialEntries = h.entries.length;
   h.pi.appendEntry = () => { throw Error('session write failed'); };
   emitTool(h, 'a'); const result = emitTool(h, 'b');
   assert.equal(result.isError, false);
   assert.match(result.content[0].text, /Invalid preload/);
-  assert.equal(h.entries.length, 0);
+  assert.equal(h.entries.length, initialEntries);
+});
+
+test('startup announcement is muted, branch-deduplicated and no-tests mode does not attempt verification', async () => {
+  const h = harness('active', async () => ready);
+  const startup = h.entries.filter(entry => entry.customType === 'pi-sitter-startup');
+  assert.equal(startup.length, 1);
+  assert.match(startup[0].data.text, /Pi Sitter 0\.1\./);
+  assert.match(startup[0].data.text, /no-tests mode \(completion UNVERIFIED\)/);
+  const renderer = h.entryRenderers.get('pi-sitter-startup');
+  const rows = renderer(startup[0], {}, { fg: (tone, value) => `<${tone}>${value}</${tone}>` }).render(120);
+  assert.match(rows[0], /^<muted>Pi Sitter/);
+  h.handlers.get('session_start')({ type: 'session_start', reason: 'resume' }, h.ctx);
+  assert.equal(h.entries.filter(entry => entry.customType === 'pi-sitter-startup').length, 1);
+  await h.commands.get('sitter').handler('verify', h.ctx);
+  assert.ok(h.notices.some(([message]) => /no-tests mode/.test(message)));
+  assert.equal(h.entries.filter(entry => entry.customType === 'pi-sitter-verification-attempt').length, 0);
+  assert.equal(h.entries.filter(entry => entry.customType === 'pi-sitter-completion').length, 0);
+  assert.equal(h.sent.length, 0);
 });
 
 test('/sitter verify runs at an idle boundary and blocks before legacy verifier without controller authority', async () => {
