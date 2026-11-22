@@ -1,6 +1,6 @@
 # P1 — Pi Sitter 1.0 Test-directed implementation prompt stack
 
-**Status:** PROMPTS AUTHORED / NOT EXECUTED / NOT QUALIFIED. **Authoring basis:** `d028500`, approved Q1–Q10 and audit A01–A12.  
+**Status (2026-11-22):** P1 committed as `016afdc`; P2 automated checks recovered at uncommitted `0.1.2`; P3–P9 unexecuted; P10 manual; 1.0 not qualified. **Authoring basis:** `d028500`, approved Q1–Q10 and audit A01–A12.
 **First implementation checkpoint:** `0.1.1` from package `0.1.0`. **Manual final:** P10 `0.1.10`. **Release:** `1.0.0` only after separately approved qualification/publication.
 
 ## Runner-ready prompt inventory
@@ -23,8 +23,8 @@ These are the exact 10 authored runnable-grammar files. The first nine are bound
 ## Bounded handoff
 
 1. [Assessment](prompt-assessment.md) → [implementation plan](implementation-plan.md) → [all A01–A12 findings](codebase-gap-audit.md) → [qualification ledger](qualification/README.md).
-2. Owner reviews exact texts; no implementation execution is implied by authoring. To validate syntax only: `npm run codex:phase:validate -- p1`. To execute the approved first nine later: `npm run codex:phase -- p1` from clean reviewed checkout, never as part of prompt writing.
-3. **KNOWN F0-R/CI issue:** `tests/runner/pi-sitter-runner-compat.test.mjs` currently asserts zero P1 prompts and constant `0.1.0`. P1 addresses this. Until that specific test-only correction is implemented, CI on the authored stack may be red. Do not misrepresent this as a pass; preserve canonical Dope scripts.
+2. Owner reviews exact texts; no implementation execution is implied by authoring. To validate syntax only: `npm run codex:phase:validate -- p1`. The [runner preflight](../../runner.md#execution-environment-and-checkpoint-preflight) must pass inside the Codex child before implementation; an outer-terminal pass alone is insufficient.
+3. P1 replaced the old fixed-version and zero-prompt compatibility assertions. P2 initially stopped because the child could not run Git fixtures or bubblewrap; its [recovery evidence](qualification/P2-2026-11-21-not-green.md) records passing checks and the `0.1.2` version change. The runner still owns the P2 commit. Unexecuted P3–P9 prompts now require the child preflight before source edits.
 4. Verify original trigger behavior unchanged, full original requirements persisted, complete controller-owned acceptance inventory, strict Vitest evidence, host-enforced read-only MCP, constrained test execution, attempt-bound replay and a true independent requirement audit. On non-GREEN, stop and append correction evidence.
 5. Manual native P10 and formal `1.0.0` publication require independent owner approval. No prompt owns scored llm-zone benchmark criteria.
 

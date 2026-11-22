@@ -1,5 +1,7 @@
 # Pi Sitter — Current Implementation and Handoff
 
+**Checkpoint update (2026-11-22):** Dope runner committed P1 as `016afdc`. P2's task/manifest implementation is dirty and uncommitted at package `0.1.2`; its automated checks now pass in the corrected Codex child environment, and the runner still owns its Git checkpoint. P3–P9 have not executed, P10 is manual, and the 1.0 design remains unqualified. See the [P2 recovery evidence](docs/tasks/p1/qualification/P2-2026-11-21-not-green.md) and [runner preflight](docs/runner.md#execution-environment-and-checkpoint-preflight). The dated baseline below records earlier 0.1.0 truth.
+
 **As of:** 2026-11-21. **Architecture:** 10/10 owner decisions approved in [GitHub issue #1](https://github.com/jfin602/pi-sitter/issues/1). **Documentation application:** this foundation follows approved [review #2](https://github.com/jfin602/pi-sitter/issues/2). **Release:** `0.1.0` source, not 1.0 qualified or published on the basis of this documentation.
 
 ## Observed on source baseline before this doc application

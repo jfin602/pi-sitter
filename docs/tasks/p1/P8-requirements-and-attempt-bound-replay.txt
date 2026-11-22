@@ -12,6 +12,10 @@ STATE: AUTHORED ONLY / NOT EXECUTED
 AUDIT FINDINGS: A10 A11
 BASIS: Pi Sitter 0.1.0 source baseline d028500bc5d79638e9093d964e919d3a978f021f; do not assume HEAD remains identical after prior prompts.
 
+EXECUTION ENVIRONMENT PREFLIGHT
+- Expected starting package checkpoint: `0.1.7`. Before editing, run `npm run test:runner` and `npm test` inside this Codex child execution context. Both must be able to use disposable Git repositories and the bubblewrap verifier fixture. An outer-terminal pass is insufficient.
+- If either command is blocked by `EPERM` or namespace denial, stop before implementation, preserve the starting version, and report the environment blocker. Do not bypass a mandatory check to satisfy the runner's final version assertion. See docs/runner.md.
+
 READ FIRST (bounded)
 - AGENTS.md; BOOT.md; MODULES.md.
 - docs/decisions/0001-ten-approved-decisions.md, docs/tasks/p1/codebase-gap-audit.md, docs/tasks/p1/implementation-plan.md and relevant contract(s).

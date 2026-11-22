@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createPiSitter } from '../src/index.ts';
 import { decideCompletion, createRecoveryPlan } from '../src/completion.ts';
+import { createHash } from 'node:crypto';
 
 function report(stage, snapshot, results, regressions = []) {
   const gates = results.map(([id, result, fact = 'main.script']) => ({ id, result, fromStage: stage,
@@ -12,8 +13,12 @@ function report(stage, snapshot, results, regressions = []) {
     explanation: result === 'UNVERIFIED' ? 'Probe unavailable' : '' }));
   const counts = { PASS: 0, FAIL: 0, UNVERIFIED: 0 };
   for (const gate of gates) counts[gate.result]++;
-  return { schemaVersion: 1, stage, snapshotIdentity: snapshot, snapshotFiles: 7, source: 'reviewed',
-    counts, gates, regressions, missingDeliverables: gates.filter(g => g.result === 'FAIL').map(g => g.id), validationLimitations: [] };
+  return { schemaVersion: 2, taskId: 'task-04', stage,
+    snapshotIdentity: snapshot === 'unavailable' || /^[a-f0-9]{64}$/.test(snapshot) ? snapshot : createHash('sha256').update(snapshot).digest('hex'),
+    snapshotFiles: 7, source: 'reviewed', suite: { id: 'suite-04', version: 'v1', digest: 'f'.repeat(64) },
+    counts, gates: gates.map(gate => ({ ...gate, tests: [{ id: `scored-${gate.id}`, result: gate.result === 'UNVERIFIED' ? 'SKIP' : gate.result,
+      evidence: gate.evidence }] })), regressions,
+    missingDeliverables: gates.filter(g => g.result === 'FAIL').map(g => g.id), validationLimitations: [] };
 }
 
 function harness({ mode = 'active', reports = [], branch = [], analyze, shouldAnalyze, evidenceBroker, completionReady } = {}) {
@@ -21,6 +26,20 @@ function harness({ mode = 'active', reports = [], branch = [], analyze, shouldAn
   process.env.PI_SITTER_STAGE = '04';
   const handlers = new Map(), commands = new Map(), entryRenderers = new Map(), entries = [...branch], notices = [], sent = [], working = [];
   let index = 0;
+  let currentReport;
+  const known = [...reports.filter(value => value && typeof value === 'object' && !('then' in value)),
+    ...branch.filter(entry => entry.customType === 'pi-sitter-verification').map(entry => entry.data)];
+  const gateCatalog = new Map(known.flatMap(value => value.gates ?? []).map(gate => [gate.id, gate.requirement]));
+  if (gateCatalog.size === 0) gateCatalog.set('A', 'Requirement for A');
+  const controller = () => {
+    const selected = currentReport ?? known[0];
+    const requirements = [...gateCatalog].map(([id, text]) => ({ id, text }));
+    return { schemaVersion: 1, taskId: 'task-04', stage: '04',
+      originalTask: { text: requirements.map(row => row.text).join('\n'), reference: 'test-controller:04', version: 'v1', requirements },
+      suite: { id: 'suite-04', version: 'v1', digest: 'f'.repeat(64),
+        gates: requirements.map(row => ({ id: row.id, requirementIds: [row.id], testIds: [`scored-${row.id}`] })) },
+      sourceSnapshot: selected?.snapshotIdentity ?? 'a'.repeat(64) };
+  };
   const pi = { on(name, fn) { const old = handlers.get(name); handlers.set(name, old ? async (...args) => {
     await old(...args); return fn(...args);
   } : fn); }, registerCommand(name, command) { commands.set(name, command); }, registerEntryRenderer(name, renderer) { entryRenderers.set(name, renderer); },
@@ -35,10 +54,13 @@ function harness({ mode = 'active', reports = [], branch = [], analyze, shouldAn
       notify(message, level) { notices.push([message, level]); } } };
   createPiSitter({ verify: async (_stage, _root, options) => {
     if (options.signal?.aborted) throw Error('aborted');
-    const value = reports[Math.min(index++, reports.length - 1)];
+    const value = await reports[Math.min(index++, reports.length - 1)];
     if (value instanceof Error) throw value;
-    return value;
-  }, analyze, shouldAnalyze, evidenceBroker, completionReady })(pi);
+    currentReport = value;
+    return { schemaVersion: 2, taskId: value.taskId, stage: value.stage,
+      snapshotIdentity: value.snapshotIdentity, suite: value.suite,
+      gates: value.gates.map(gate => ({ id: gate.id, tests: gate.tests })) };
+  }, loadControllerContext: controller, analyze, shouldAnalyze, evidenceBroker, completionReady })(pi);
   handlers.get('session_start')({}, ctx);
   const settle = (outcome = 'completed') => handlers.get('agent_before_settle')({ outcome, entries: [], continue: false }, ctx);
   const workerFinish = () => handlers.get('turn_end')({ outcome: 'completed', entries: [], toolResults: [],
@@ -47,7 +69,7 @@ function harness({ mode = 'active', reports = [], branch = [], analyze, shouldAn
 }
 
 test('completion decision requires every gate to pass and blocks unavailable snapshots', () => {
-  assert.equal(decideCompletion(report('04', 'a'.repeat(64), [['A', 'PASS']])).decision, 'VERIFIED');
+  assert.equal(decideCompletion(report('04', 'a'.repeat(64), [['A', 'PASS']])).decision, 'UNVERIFIED');
   assert.equal(decideCompletion(report('04', 'a'.repeat(64), [['A', 'PASS'], ['B', 'FAIL']])).decision, 'RECOVERY_REQUIRED');
   assert.equal(decideCompletion(report('04', 'a'.repeat(64), [['A', 'PASS'], ['B', 'UNVERIFIED']])).decision, 'UNVERIFIED');
   assert.equal(decideCompletion(report('04', 'unavailable', [['A', 'UNVERIFIED']])).decision, 'BLOCKED');
@@ -56,10 +78,10 @@ test('completion decision requires every gate to pass and blocks unavailable sna
   assert.equal(decideCompletion(inconsistent).decision, 'BLOCKED');
 });
 
-test('clean completion records VERIFIED without steering', async () => {
+test('all passing tests remain UNVERIFIED until independent requirement review', async () => {
   const h = harness({ reports: [report('04', 'a'.repeat(64), [['A', 'PASS']])] });
   assert.equal(await h.settle(), undefined);
-  assert.equal(h.entries.find(e => e.customType === 'pi-sitter-completion').data.decision, 'VERIFIED');
+  assert.equal(h.entries.find(e => e.customType === 'pi-sitter-completion').data.decision, 'UNVERIFIED');
   assert.equal(h.entries.filter(e => e.customType === 'pi-sitter-recovery').length, 0);
 });
 
@@ -79,7 +101,7 @@ test('completion shows a gray pending transcript card and keeps the composer wor
 
   release(report('04', 'a'.repeat(64), [['A', 'PASS']]));
   assert.equal(await settlement, undefined);
-  assert.equal(pendingRenderer(pending, { expanded: false }, theme).render(80)[3].trim(), 'VERIFIED');
+  assert.equal(pendingRenderer(pending, { expanded: false }, theme).render(80)[3].trim(), 'UNVERIFIED');
   const completion = h.entries.find(e => e.customType === 'pi-sitter-completion');
   assert.equal(completion.data.displayId, pending.data.id);
   assert.equal(h.entryRenderers.get('pi-sitter-completion')(completion, { expanded: false }, theme), undefined);
@@ -88,7 +110,7 @@ test('completion shows a gray pending transcript card and keeps the composer wor
 
   const resumed = harness({ reports: [], branch: h.entries });
   const restored = resumed.entryRenderers.get('pi-sitter-verification-pending');
-  assert.equal(restored(pending, { expanded: false }, theme).render(80)[3].trim(), 'VERIFIED');
+  assert.equal(restored(pending, { expanded: false }, theme).render(80)[3].trim(), 'UNVERIFIED');
 });
 
 test('manual verify shows its pending card before returning the final result', async () => {
@@ -103,7 +125,7 @@ test('manual verify shows its pending card before returning the final result', a
   assert.equal(render(pending, { expanded: false }, theme).render(80)[3].trim(), 'VERIFYING');
   release(report('04', 'v'.repeat(64), [['A', 'PASS']]));
   await command;
-  assert.equal(render(pending, { expanded: false }, theme).render(80)[3].trim(), 'VERIFIED');
+  assert.equal(render(pending, { expanded: false }, theme).render(80)[3].trim(), 'UNVERIFIED');
   assert.deepEqual(h.working.slice(-3), [['message', undefined], ['visible', false], ['visible', true]]);
 });
 
@@ -143,17 +165,17 @@ test('partial completion and unverified-only completion cannot be VERIFIED', asy
   assert.equal(uncertain.entries.find(e => e.customType === 'pi-sitter-completion').data.decision, 'UNVERIFIED');
 });
 
-test('successful recovery reverifies and records VERIFIED', async () => {
+test('successful repair rerun remains UNVERIFIED pending requirement review', async () => {
   const h = harness({ reports: [report('04', 'e'.repeat(64), [['A', 'FAIL']]),
     report('04', 'f'.repeat(64), [['A', 'PASS']])] });
   assert.equal((await h.settle()).continue, true);
   assert.equal(await h.settle(), undefined);
   assert.deepEqual(h.entries.filter(e => e.customType === 'pi-sitter-completion').map(e => e.data.decision),
-    ['RECOVERY_REQUIRED', 'VERIFIED']);
+    ['RECOVERY_REQUIRED', 'UNVERIFIED']);
 });
 
 test('recovery regression is named and two attempts are the maximum', async () => {
-  const h = harness({ reports: [report('04', 'g'.repeat(64), [['A', 'FAIL']]),
+  const h = harness({ reports: [report('04', 'g'.repeat(64), [['A', 'FAIL'], ['B', 'PASS']]),
     report('04', 'h'.repeat(64), [['A', 'FAIL'], ['B', 'FAIL']], ['B']),
     report('04', 'i'.repeat(64), [['A', 'FAIL'], ['B', 'FAIL']], ['B'])] });
   assert.equal((await h.settle()).continue, true);
@@ -165,11 +187,11 @@ test('recovery regression is named and two attempts are the maximum', async () =
 });
 
 test('a user repair turn starts a fresh bounded recovery cycle, including after resume', async () => {
-  const failed = report('04', 'v'.repeat(64), [['A', 'FAIL']]);
+  const failed = report('04', 'v'.repeat(64), [['A', 'FAIL'], ['B', 'UNVERIFIED']]);
   const h = harness({ reports: [failed,
-    report('04', 'w'.repeat(64), [['A', 'FAIL']]),
-    report('04', 'x'.repeat(64), [['A', 'FAIL']]),
-    report('04', 'y'.repeat(64), [['B', 'FAIL']])] });
+    report('04', 'w'.repeat(64), [['A', 'FAIL'], ['B', 'UNVERIFIED']]),
+    report('04', 'x'.repeat(64), [['A', 'FAIL'], ['B', 'UNVERIFIED']]),
+    report('04', 'y'.repeat(64), [['A', 'PASS'], ['B', 'FAIL']])] });
   assert.equal((await h.settle()).continue, true);
   assert.equal((await h.settle()).continue, true);
   assert.equal(await h.settle(), undefined);
@@ -180,7 +202,7 @@ test('a user repair turn starts a fresh bounded recovery cycle, including after 
   assert.equal(next.entries.find(e => e.customType === 'pi-sitter-recovery').data.attempt, 1);
   assert.equal(h.entries.filter(e => e.customType === 'pi-sitter-verification-attempt').at(-1).data.attempt, 1);
 
-  const resumed = harness({ reports: [report('04', 'z'.repeat(64), [['B', 'FAIL']])], branch: prior });
+  const resumed = harness({ reports: [report('04', 'z'.repeat(64), [['A', 'PASS'], ['B', 'FAIL']])], branch: prior });
   const afterResume = await resumed.settle();
   assert.equal(afterResume.continue, true);
   assert.equal(afterResume.entries.find(e => e.customType === 'pi-sitter-recovery').data.attempt, 1);
@@ -206,7 +228,7 @@ test('unchanged saved snapshot gets one focused retry of the same repair attempt
   assert.equal(second.entries.find(e => e.customType === 'pi-sitter-recovery').data.attempt, 2);
   await h.workerFinish();
   assert.equal(await h.settle(), undefined);
-  assert.equal(h.entries.filter(e => e.customType === 'pi-sitter-completion').at(-1).data.decision, 'VERIFIED');
+  assert.equal(h.entries.filter(e => e.customType === 'pi-sitter-completion').at(-1).data.decision, 'UNVERIFIED');
 });
 
 test('repeated unchanged snapshot stops after one retry without an unbounded loop', async () => {
@@ -310,7 +332,7 @@ test('Pi commands show gate evidence, decision, and verification timing', async 
   await h.commands.get('sitter').handler('gates', h.ctx);
   assert.match(h.notices.at(-1)[0], /B: FAIL/);
   await h.commands.get('sitter').handler('report', h.ctx);
-  assert.match(h.notices.at(-1)[0], /Unresolved gates:\nB FAIL: Observed runtime behavior is missing/);
+  assert.match(h.notices.at(-1)[0], /Unresolved gates:\nB FAIL: scored-B: Observed runtime behavior is missing/);
   await h.commands.get('sitter').handler('status', h.ctx);
   assert.match(h.notices.at(-1)[0], /verification \d+ ms \(1\/5\); recovery 0\/2/);
 });
@@ -318,7 +340,7 @@ test('Pi commands show gate evidence, decision, and verification timing', async 
 test('aborted completion and user cancellation do not deliver recovery', async () => {
   const h = harness({ reports: [report('04', 'm'.repeat(64), [['A', 'FAIL']])] });
   assert.equal(await h.settle('aborted'), undefined);
-  assert.equal(h.entries.length, 0);
+  assert.equal(h.entries.filter(e => e.customType === 'pi-sitter-verification').length, 0);
   await h.commands.get('sitter').handler('off', h.ctx);
   assert.equal(await h.settle(), undefined);
   assert.equal(h.entries.filter(e => e.customType === 'pi-sitter-recovery').length, 0);

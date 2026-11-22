@@ -42,7 +42,8 @@ test('completion uses stacked rows with theme-aware colors and emphasized status
     const lines = render(entry, { expanded: false }, theme).render(80);
     assert.equal(lines.length, 7);
     assert.ok(lines.every(line => line.length === 80));
-    assert.deepEqual(lines.map(line => line.trim()), ['', 'Pi Sitter', 'Stage 01', 'VERIFIED', '', '9 gates passed', '']);
+    assert.deepEqual(lines.map(line => line.trim()), ['', 'Pi Sitter', 'Stage 01', 'HISTORICAL', '',
+      'Historical success claim; current requirement review unavailable', '']);
     assert.equal(styles[1].text.trim(), 'Pi Sitter');
     assert.equal(styles[1].bold, true);
     assert.deepEqual(styles[1].fg, appearance === 'dark' ? { kind: 'rgb', r: 200, g: 185, b: 217 } : 'accent');
@@ -361,7 +362,7 @@ test('Observer exception leaves finalized Worker result untouched', () => {
   assert.equal(h.entries.length, 0);
 });
 
-test('/sitter verify runs at an idle boundary and stores one native Pi verification record', async () => {
+test('/sitter verify runs at an idle boundary and blocks before legacy verifier without controller authority', async () => {
   process.env.PI_SITTER_STAGE = '02';
   try {
     let calls = 0;
@@ -380,9 +381,10 @@ test('/sitter verify runs at an idle boundary and stores one native Pi verificat
     assert.equal(calls, 0);
     h.ctx.isIdle = () => true;
     await h.commands.get('sitter').handler('verify', h.ctx);
-    assert.equal(calls, 1);
-    assert.deepEqual(h.entries.filter(entry => entry.customType === 'pi-sitter-verification').map(entry => entry.data), [report]);
-    assert.equal(h.notices.length, 1);
+    assert.equal(calls, 0);
+    assert.deepEqual(h.entries.filter(entry => entry.customType === 'pi-sitter-verification').map(entry => entry.data), []);
+    assert.equal(h.entries.find(entry => entry.customType === 'pi-sitter-completion')?.data.decision, 'BLOCKED');
+    assert.ok(h.notices.length >= 1);
     assert.match(h.notices[0][0], /after the Worker turn completes/);
   } finally { delete process.env.PI_SITTER_STAGE; }
 });

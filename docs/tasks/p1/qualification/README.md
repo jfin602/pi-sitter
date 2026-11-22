@@ -1,6 +1,6 @@
-# Pi Sitter P1 Qualification — Empty Evidence Ledger
+# Pi Sitter P1 Qualification — Evidence Ledger
 
-**Status: TEMPLATE / NOTHING EXECUTED OR QUALIFIED BY DOCUMENT AUTHORING.** Record each result with exact Git SHA/dirty source, runner/Pi/Node/Vitest versions, execution environment, exact command, expected observation, actual evidence and resulting status.
+**Status: P1 committed; P2 automated checkpoint recovered but uncommitted; full 1.0 qualification remains open.** Record each result with exact Git SHA/dirty source, runner/Pi/Node/Vitest versions, execution environment, exact command, expected observation, actual evidence and resulting status.
 
 | Gate | Required demonstration | Initial |
 | --- | --- | --- |
@@ -34,6 +34,10 @@ Use `PASS`, `FAIL`, `NOT RUN`, `BLOCKED`, `EVIDENCE GAP`. A simulated tool respo
 
 **Historical baseline, separate from new 1.0 gate evidence:** [CI 44943269353](https://github.com/jfin602/pi-sitter/actions/runs/44943269353/job/136964909340) @ `feea1c1` recorded 109/109 developer-runner and 47/47 existing extension tests passing, typecheck passed, pack dry-run listed 35 files. Audit-local 109/109 runner, 3/3 analysis tests and dry-run passed; network namespace local verifier run BLOCKED in audit environment, existing CI sandbox fixture passed. Do not mark the new R01–R11 cases GREEN from that baseline. Record source SHA/dirty basis, Pi/Node/Vitest versions, exact commands, expected/observed outputs and artifact refs for each future check.
 
-## Authored prompt-stack status (not executed)
+## Prompt-stack history
 
-P1–P9 implementation prompt texts and P10 manual closeout have been authored. All **new** F0-R and 1.0 acceptance checks above remain NOT RUN until separately authorized implementation and evidence. Baseline CI will initially detect the temporary `tests/runner/pi-sitter-runner-compat.test.mjs` "zero prompt" assertion; only P1's test-only correction resolves it. Do not record that as GREEN prior to an observed rerun.
+P1 was committed by the Dope runner as `016afdc`. P2 has recovered automated evidence but awaits its runner-owned commit. P3–P9 remain unexecuted; P10 remains manual. The table above is the original full qualification matrix, not a claim that deterministic checkpoint tests alone close R01–R11.
+
+## P2 execution checkpoint
+
+[P2 task/manifest evidence](P2-2026-11-21-not-green.md) preserves the initial aggregate sandbox failures and appends the successful recovery checks. The working-tree package version is `0.1.2`; the checkpoint is ready for the Dope runner to commit. Native Pi/MCP, P3+ implementation and 1.0 release qualification remain open.

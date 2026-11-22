@@ -13,6 +13,8 @@ Pi Sitter is advisory. The *external controller* determines the formal task/benc
 
 Current `src/completion.ts` exposes `VERIFIED | RECOVERY_REQUIRED | UNVERIFIED | BLOCKED` aggregate decisions; it is not yet the complete independent requirement matrix contract. Test with untested requirements despite all-green Vitest, broken requirements, missing report, invalid provenance and real completion claims.
 
+P2 interim rule: schema 1 reports are historical and cannot produce current `VERIFIED`. Schema 2 protected tests may produce evidence-backed `RECOVERY_REQUIRED` on explicit failed mandatory rows, but even an all-pass suite remains `UNVERIFIED` while requirement findings are not yet implemented. The external controller still owns formal outcome. This conservative rule will be revisited when the independent requirement matrix is qualified.
+
 ## Audit sentinel: false-positive verification is forbidden
 
 The authoritative result must compare expected mandatory gate/test inventory **and** *all* original authored requirements, not merely the set of `report.gates` supplied by a provider. In the audit, one passing export test and uninspected accessibility produced `VERIFIED` in current code, as did gate A alone when A+B were expected. Both must remain non-VERIFIED until independent coverage is demonstrated.

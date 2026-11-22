@@ -5,7 +5,8 @@ import { piSitterLimits, type PiSitterLimits } from './config.ts';
 import { parseDiagnosis, runInference, type Diagnosis, type InferenceOutcome, type LoadedCheck } from './inference.ts';
 import { genericFallback, type FallbackProvider } from './fallback.ts';
 import { PiSitterView } from './view.ts';
-import type { GateReport, GateSet } from './gates.ts';
+import { normalizeGateReport, type GateReport, type GateSet, type TrustedRunInput } from './gates.ts';
+import { validateControllerContext, type ControllerContext } from './controller-context.ts';
 import { createRecoveryPlan, decideCompletion, noProgressRecoveryPrompt, type CompletionRecord, type RecoveryPlan } from './completion.ts';
 import { EvidenceBroker } from './broker.ts';
 import { modelAnalysisAsk, runInspectionAnalysis, type AnalysisOutcome } from './analysis.ts';
@@ -31,6 +32,8 @@ const ANALYSIS_TYPE = 'pi-sitter-analysis';
 const DELIVERY_CONFIRM_TYPE = 'pi-sitter-delivery-confirmed';
 const DELIVERY_FAILURE_TYPE = 'pi-sitter-delivery-unconfirmed';
 const WORKER_RECOVERY_TYPE = 'pi-sitter-worker-recovery';
+const TASK_HISTORY_TYPE = 'pi-sitter-task-history';
+const CONTROLLER_TYPE = 'pi-sitter-controller-inventory';
 const MAX_NO_PROGRESS_RETRIES = 1;
 type RecoveryEntry = { attempt: number; plan: RecoveryPlan; delivery: string; retry?: number; displayId?: string };
 type RecoveryRequest = { id: string; stage: string; reset: boolean; unavailable?: string };
@@ -109,8 +112,10 @@ export interface PiSitterDependencies {
   diagnose?: Diagnoser;
   loadedCheck?: LoadedCheck;
   limits?: PiSitterLimits;
-  verify?: (stage: string, projectRoot: string, options: { signal?: AbortSignal; previous?: GateReport; ctx?: ExtensionContext }) => Promise<GateReport>;
+  verify?: (stage: string, projectRoot: string, options: { signal?: AbortSignal; previous?: GateReport; ctx?: ExtensionContext }) => Promise<GateReport | TrustedRunInput>;
   loadGates?: (stage: string) => Promise<GateSet>;
+  /** Called only by the embedding host. Never source this from worker text, tools, or loadGates. */
+  loadControllerContext?: (stage: string, projectRoot: string) => ControllerContext | undefined;
   recoveryPlan?: typeof createRecoveryPlan;
   evidenceBroker?: (projectRoot: string) => EvidenceBroker;
   shouldAnalyze?: (report: GateReport) => boolean;
@@ -147,6 +152,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     let verificationController: AbortController | undefined;
     let analysisController: AbortController | undefined;
     let lastReport: GateReport | undefined;
+    let controllerContext: ControllerContext | undefined;
     let lastCompletion: CompletionRecord | undefined;
     const verificationCards = new Map<string, CompletionRecord | 'interrupted' | undefined>();
     let pendingVerificationId: string | undefined;
@@ -340,15 +346,34 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       verificationStartedAt = performance.now();
       render(ctx);
       try {
+        const suppliedAtStart = dependencies.loadControllerContext?.(engine.stage, ctx.cwd);
+        if (!suppliedAtStart) throw new Error('Trusted controller task and protected suite are not configured');
+        const authoritative = validateControllerContext(suppliedAtStart, engine.stage);
+        if (!controllerContext || JSON.stringify(controllerContext) !== JSON.stringify(authoritative)) {
+          lastReport = undefined;
+          lastCompletion = undefined;
+          recoveryPlan = undefined;
+        }
+        controllerContext = authoritative;
+        engine.setTask(authoritative.originalTask.text, authoritative.stage);
         const run = dependencies.verify ?? configuredVerifier();
         if (!run) throw new Error('No verification provider is configured for this project');
-        const report = await run(engine.stage, ctx.cwd, { signal: current.signal, previous: lastReport, ctx });
+        const raw = await run(engine.stage, ctx.cwd, { signal: current.signal, previous: lastReport, ctx });
         if (current.signal.aborted || engine.sessionId !== sessionId) return {};
+        const suppliedAtEnd = dependencies.loadControllerContext?.(engine.stage, ctx.cwd);
+        if (!suppliedAtEnd) throw new Error('Trusted controller task and protected suite are not configured');
+        const currentContext = validateControllerContext(suppliedAtEnd, engine.stage);
+        if (currentContext.taskId !== authoritative.taskId ||
+            JSON.stringify(currentContext.originalTask) !== JSON.stringify(authoritative.originalTask) ||
+            JSON.stringify(currentContext.suite) !== JSON.stringify(authoritative.suite))
+          throw new Error('Trusted controller task or suite changed during verification');
+        controllerContext = currentContext;
+        const report = normalizeGateReport(raw, currentContext, lastReport);
         pi.appendEntry(VERIFICATION_TYPE, report);
         lastReport = report;
         const decision = decideCompletion(report);
         verificationElapsedMs = Math.round(performance.now() - verificationStartedAt);
-        const completion: CompletionRecord = { stage: report.stage, task, decision: decision.decision,
+        const completion: CompletionRecord = { stage: report.stage, task: authoritative.originalTask.text, decision: decision.decision,
           snapshotIdentity: report.snapshotIdentity, counts: report.counts,
           failedGateIds: report.gates.filter(gate => gate.result === 'FAIL').map(gate => gate.id),
           unverifiedGateIds: report.gates.filter(gate => gate.result === 'UNVERIFIED').map(gate => gate.id),
@@ -356,11 +381,13 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           reason: decision.reason };
         appendCompletion(ctx, completion);
         lastCompletion = completion;
-        recoveryPlan = completion.decision === 'RECOVERY_REQUIRED' ? (dependencies.recoveryPlan ?? createRecoveryPlan)(report, task) : undefined;
+        recoveryPlan = completion.decision === 'RECOVERY_REQUIRED' ? (dependencies.recoveryPlan ?? createRecoveryPlan)(report, authoritative.originalTask.text) : undefined;
         verificationActivity = 'Verification complete';
         return { report, completion };
       } catch (error) {
         if (!current.signal.aborted) {
+          lastReport = undefined;
+          recoveryPlan = undefined;
           const reason = error instanceof Error ? error.message.slice(0, 300) : 'unknown error';
           verificationElapsedMs = Math.round(performance.now() - verificationStartedAt);
           const completion: CompletionRecord = { stage: engine.stage, task, decision: 'BLOCKED', snapshotIdentity: 'unavailable',
@@ -484,9 +511,10 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       const unverified = report.gates.filter(gate => gate.result === 'UNVERIFIED').map(gate => gate.id);
       const exhausted = lastCompletion?.snapshotIdentity === report.snapshotIdentity &&
         lastCompletion.stage === report.stage && lastCompletion.attempt >= limits.maxRecoveryAttempts;
-      const status = unavailable ? 'BLOCKED' : failed.length ?
-        (exhausted ? 'FAILED' : 'RECOVERY_REQUIRED') : unverified.length ? 'UNVERIFIED' : 'VERIFIED';
-      const summary = unavailable ? 'Saved snapshot could not be verified' : failed.length ?
+      const status = report.schemaVersion === 1 ? 'HISTORICAL' : unavailable ? 'BLOCKED' : failed.length ?
+        (exhausted ? 'FAILED' : 'RECOVERY_REQUIRED') : 'UNVERIFIED';
+      const summary = report.schemaVersion === 1 ? 'Legacy v1 evidence lacks controller provenance' :
+        unavailable ? 'Saved snapshot could not be verified' : failed.length ?
         `${failed.length} failed: ${failed.join(', ')}` : unverified.length ?
           `${unverified.length} unverified: ${unverified.join(', ')}` : `${report.counts.PASS} gates passed`;
       return { render(width: number) { return expanded ? supervisorCard(theme, {
@@ -498,7 +526,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       }, width) : []; }, invalidate() {} };
     });
     function renderCompletionCard(value: CompletionRecord, expanded: boolean, theme: Theme, width: number): string[] {
-      const summary = value.decision === 'VERIFIED' ? `${value.counts.PASS} gates passed` :
+      const summary = value.decision === 'VERIFIED' ? 'Historical success claim; current requirement review unavailable' :
         value.decision === 'RECOVERY_REQUIRED' ?
           `${value.counts.FAIL} failed: ${value.failedGateIds.join(', ') || value.reason}` :
           value.decision === 'UNVERIFIED' ?
@@ -507,7 +535,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         value.decision === 'RECOVERY_REQUIRED' && value.attempt < limits.maxRecoveryAttempts ? 'recovery' : 'failure';
       return supervisorCard(theme, {
         stage: value.stage,
-        status: value.decision === 'RECOVERY_REQUIRED' && tone === 'failure' ? 'FAILED' : value.decision,
+        status: value.decision === 'VERIFIED' ? 'HISTORICAL' : value.decision === 'RECOVERY_REQUIRED' && tone === 'failure' ? 'FAILED' : value.decision,
         summary, details: expanded && value.reason !== summary ? [value.reason] : [], tone,
       }, width);
     }
@@ -606,6 +634,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         verificationController = undefined;
         analysisController = undefined;
         lastReport = undefined;
+        controllerContext = undefined;
         lastCompletion = undefined;
         verificationCards.clear();
         pendingVerificationId = undefined;
@@ -631,10 +660,15 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         lastRejectedReason = '';
         awaitingContext.clear();
         const stage = process.env.PI_SITTER_STAGE ?? 'current';
+        let historicalTask = '';
         for (const entry of ctx.sessionManager.getBranch()) {
           if (entry.type === 'message' && entry.message.role === 'user') startUserCompletionCycle();
           if (entry.type === 'message' && lastRecovery && entry.message.role === 'assistant') recoveryTurnObserved = true;
           if (entry.type !== 'custom') continue;
+          if (entry.customType === TASK_HISTORY_TYPE && entry.data && typeof entry.data === 'object') {
+            const saved = entry.data as { stage?: string; task?: string };
+            if (saved.stage === stage && typeof saved.task === 'string' && saved.task.length <= 65536) historicalTask = saved.task;
+          }
           if (entry.customType === MODE_TYPE && (entry.data === 'off' || entry.data === 'shadow' || entry.data === 'active')) engine.setMode(entry.data);
           if (entry.customType === EVENT_TYPE && entry.data && typeof entry.data === 'object') engine.restoreTrigger(entry.data as Trigger);
           if (entry.customType === CALL_TYPE) calls++;
@@ -695,23 +729,93 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         }
         for (const [id, state] of verificationCards) if (!state) verificationCards.set(id, 'interrupted');
         for (const [id, state] of recoveryCards) if (!state) recoveryCards.set(id, 'interrupted');
-        engine.setTask(stage ? `Task stage ${stage}` : 'Pi session', stage);
+        const supplied = dependencies.loadControllerContext?.(stage, ctx.cwd);
+        if (supplied) {
+          controllerContext = validateControllerContext(supplied, stage);
+          engine.setTask(controllerContext.originalTask.text, stage);
+          pi.appendEntry(CONTROLLER_TYPE, { taskId: controllerContext.taskId, stage,
+            reference: controllerContext.originalTask.reference, version: controllerContext.originalTask.version,
+            suiteId: controllerContext.suite.id, suiteDigest: controllerContext.suite.digest,
+            sourceSnapshot: controllerContext.sourceSnapshot });
+        } else engine.setTask(historicalTask || (stage ? `Task stage ${stage}` : 'Pi session'), stage);
+        // Session entries are historical only. A fresh host-run check is needed for current status.
+        if (!controllerContext || lastReport?.schemaVersion !== 2 ||
+            lastReport.taskId !== controllerContext.taskId ||
+            lastReport.suite.digest !== controllerContext.suite.digest ||
+            lastReport.snapshotIdentity !== controllerContext.sourceSnapshot) {
+          lastReport = undefined;
+          lastCompletion = undefined;
+          recoveryPlan = undefined;
+        } else {
+          try {
+            lastReport = normalizeGateReport({ schemaVersion: 2, taskId: lastReport.taskId, stage: lastReport.stage,
+              snapshotIdentity: lastReport.snapshotIdentity, suite: lastReport.suite,
+              gates: lastReport.gates.map(gate => ({ id: gate.id, tests: gate.tests })) }, controllerContext);
+            if (lastCompletion) {
+              const decision = decideCompletion(lastReport);
+              lastCompletion = { ...lastCompletion, decision: decision.decision, reason: decision.reason,
+                counts: lastReport.counts, failedGateIds: lastReport.gates.filter(gate => gate.result === 'FAIL').map(gate => gate.id),
+                unverifiedGateIds: lastReport.gates.filter(gate => gate.result === 'UNVERIFIED').map(gate => gate.id) };
+            }
+          } catch {
+            lastReport = undefined;
+            lastCompletion = undefined;
+            recoveryPlan = undefined;
+          }
+        }
+        for (const [id, card] of verificationCards) {
+          if (card && card !== 'interrupted' && card.decision === 'VERIFIED')
+            verificationCards.set(id, { ...card, decision: 'UNVERIFIED', reason: 'Historical completion requires current controller evidence' });
+        }
         if (lastReport && lastCompletion?.decision === 'RECOVERY_REQUIRED') recoveryPlan = (dependencies.recoveryPlan ?? createRecoveryPlan)(lastReport, lastCompletion.task);
         engine.sessionId = ctx.sessionManager.getSessionId();
         lastStatus = lastWidget = '';
         render(ctx);
-      } catch { /* Startup remains best effort. */ }
+      } catch {
+        controllerContext = undefined;
+        lastReport = undefined;
+        lastCompletion = undefined;
+        recoveryPlan = undefined;
+      }
     });
 
-    pi.on('before_agent_start', (event) => {
+    pi.on('before_agent_start', (event, ctx) => {
       try {
         if (event.messageType === 'user') {
           startUserCompletionCycle();
-          engine.setTask(event.prompt, engine.stage);
+          const supplied = ctx && dependencies.loadControllerContext?.(engine.stage, ctx.cwd);
+          if (supplied) {
+            const next = validateControllerContext(supplied, engine.stage);
+            if (controllerContext?.taskId !== next.taskId || controllerContext.suite.digest !== next.suite.digest ||
+                controllerContext.sourceSnapshot !== next.sourceSnapshot) {
+              lastReport = undefined;
+              lastCompletion = undefined;
+              recoveryPlan = undefined;
+            }
+            controllerContext = next;
+            engine.setTask(next.originalTask.text, next.stage);
+          } else if (dependencies.loadControllerContext && controllerContext) {
+            controllerContext = undefined;
+            lastReport = undefined;
+            lastCompletion = undefined;
+            recoveryPlan = undefined;
+            engine.setTask(event.prompt.slice(0, 65536), engine.stage);
+          }
+          if (!controllerContext && (!engine.task || engine.task.startsWith('Task stage '))) {
+            engine.setTask(event.prompt.slice(0, 65536), engine.stage);
+            pi.appendEntry(TASK_HISTORY_TYPE, { stage: engine.stage, task: engine.task });
+          }
           workerToolNames.length = 0;
         }
         if (event.messageType === 'custom') workerState = 'Recovering';
-      } catch { /* Observation only. */ }
+      } catch {
+        if (event.messageType === 'user' && dependencies.loadControllerContext) {
+          controllerContext = undefined;
+          lastReport = undefined;
+          lastCompletion = undefined;
+          recoveryPlan = undefined;
+        }
+      }
     });
 
     pi.on('tool_execution_start', event => {
@@ -1033,8 +1137,8 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           else if (command === 'status') {
             ctx.ui.notify(`Pi Sitter ${engine.mode}; Worker ${workerState}; stage ${engine.stage || 'unset'}; gates ${lastCompletion?.decision ?? 'pending'}; ${verificationActivity}; verification ${verificationElapsedMs} ms (${verificationRuns}/${limits.maxCompletionVerifications}); recovery ${recoveryAttempts}/${limits.maxRecoveryAttempts}; diagnosis ${completionDiagnosisCalls}/1; recovery generation ${recoveryGenerationCalls}/1; unresolved ${lastCompletion?.failedGateIds.concat(lastCompletion?.unverifiedGateIds ?? []).join(', ') || 'none'}; status ${view.phase}${view.result ? `: ${view.result}` : ''}; last rejected ${lastRejectedReason || "none"}; triggers ${engine.triggerCount}; inference ${calls}/${limits.maxInferenceAttempts}; valid ${validDiagnoses}; model delivered ${modelAdvisories}/${limits.maxValidAdvisories}; fallback delivered ${fallbackAdvisories}/${limits.maxFallbackAdvisories}; delivered ${delivered}; confirmed ${confirmedDeliveries}; failed deliveries ${failedDeliveries}; Worker recoveries ${workerRecoveries}; abstained ${abstained}; failed ${failed}; budget ${remaining()}; tokens ${inputTokens}/${outputTokens}; latency ${totalLatencyMs} ms; observer ${engine.overheadMs.toFixed(1)} ms`, 'info');
           } else if (command === 'gates') {
-            const gates = lastReport?.gates ?? (dependencies.loadGates && engine.stage ? (await dependencies.loadGates(engine.stage)).gates : []);
-            ctx.ui.notify(gates.length ? `Authoritative gates for ${engine.stage}:\n${gates.map(gate => `${gate.id}: ${'result' in gate ? gate.result : 'PENDING'} — ${gate.requirement}`).join('\n')}` : 'No gate contract is available for this stage', gates.length ? 'info' : 'warning');
+            const gates = controllerContext?.suite.gates ?? [];
+            ctx.ui.notify(gates.length ? `Host-provided protected gates for ${engine.stage}:\n${gates.map(gate => `${gate.id}: ${lastReport?.gates.find(row => row.id === gate.id)?.result ?? 'PENDING'} — requirements ${gate.requirementIds.join(', ')}`).join('\n')}` : 'No trusted gate contract is available for this stage', gates.length ? 'info' : 'warning');
           } else if (command === 'report') {
             const unresolved = lastReport?.gates.filter(gate => gate.result !== 'PASS') ?? [];
             ctx.ui.notify(lastCompletion ? `Stage ${lastCompletion.stage}: ${lastCompletion.decision}; ${lastCompletion.counts.PASS} PASS, ${lastCompletion.counts.FAIL} FAIL, ${lastCompletion.counts.UNVERIFIED} UNVERIFIED; regressions: ${lastCompletion.regressions.join(', ') || 'none'}; snapshot ${lastCompletion.snapshotIdentity}; ${lastCompletion.reason}${lastReport?.supervisorSessionFile ? `\nSupervisor Pi transcript: ${lastReport.supervisorSessionFile}` : ''}${unresolved.length ? `\nUnresolved gates:\n${unresolved.map(gate => `${gate.id} ${gate.result}: ${gate.evidence}`).join('\n')}` : ''}${lastReport?.validationLimitations.length ? `\nLimitations: ${lastReport.validationLimitations.join('; ')}` : ''}` : 'No verification report is available', lastCompletion ? 'info' : 'warning');

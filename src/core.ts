@@ -209,7 +209,7 @@ export class PiSitterEngine {
   }
 
   setTask(task: string, stage = ''): void {
-    this.task = task.slice(0, 700);
+    this.task = task;
     this.stage = stage;
   }
 

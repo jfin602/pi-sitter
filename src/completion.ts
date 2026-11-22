@@ -27,6 +27,8 @@ export interface RecoveryPlan {
 export function decideCompletion(report: GateReport | undefined, error?: string): { decision: CompletionDecision; reason: string } {
   if (error || !report || report.snapshotIdentity === 'unavailable' || report.gates.length === 0)
     return { decision: 'BLOCKED', reason: error ?? 'Verification could not safely inspect a project snapshot' };
+  if (report.schemaVersion === 1)
+    return { decision: 'UNVERIFIED', reason: 'Legacy schema v1 is historical evidence without protected suite and task provenance' };
   const counts = { PASS: 0, FAIL: 0, UNVERIFIED: 0 };
   for (const gate of report.gates) {
     if (!(gate.result in counts)) return { decision: 'BLOCKED', reason: `Invalid gate result for ${gate.id}` };
@@ -36,7 +38,7 @@ export function decideCompletion(report: GateReport | undefined, error?: string)
     return { decision: 'BLOCKED', reason: 'Gate results and report counts disagree' };
   if (counts.FAIL > 0) return { decision: 'RECOVERY_REQUIRED', reason: `${counts.FAIL} required gates failed` };
   if (counts.UNVERIFIED > 0) return { decision: 'UNVERIFIED', reason: `${counts.UNVERIFIED} required gates lack sufficient evidence` };
-  return { decision: 'VERIFIED', reason: 'Every required gate passed on the saved snapshot' };
+  return { decision: 'UNVERIFIED', reason: 'Mandatory tests passed; independent original requirement review is pending' };
 }
 
 export function createRecoveryPlan(report: GateReport, task: string,

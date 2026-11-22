@@ -19,6 +19,7 @@ This is a **short task-navigation and engineering policy**, not an execution tra
 - Preserve provenance: no PASS without saved source identity, approved suite identity and actual test evidence. Missing, skipped, stale, or malformed evidence must fail closed.
 - Preserve quiet on-demand inference. Do not start a second model continuously, or expand a gate-directed investigation into unrelated refactoring.
 - **Dope Codex phase runner is developer tooling**, not Pi Sitter's runtime verifier. It owns its own versioned Git commits; agents executing prompt stacks must not self-commit/move HEAD. Read [docs/runner.md](docs/runner.md).
+- Before writing or executing a phase prompt, check its mandatory commands in the actual Codex child environment, record the previous and target versions, and advance `package.json` only after the checks pass. See [runner preflight](docs/runner.md#execution-environment-and-checkpoint-preflight); a final version mismatch after red tests is a secondary failure, not permission to bypass them.
 - Record exact commands, revision, outcomes and evidence gaps in the task-local qualification ledger. Never treat a commit, generated documentation, or model assertion as a qualified release.
 - No source changes, prompt execution, release tags or npm publication merely because a plan exists. Preserve dirty owner work and historical evidence. The owner authorizes execution/closeout separately.
 

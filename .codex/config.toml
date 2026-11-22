@@ -1,0 +1,5 @@
+# Developer phase-runner agents execute Git-fixture and bubblewrap tests.
+# Run this repository only in a trusted local development environment.
+# Pi Sitter's runtime verifier has its own isolation policy.
+sandbox_mode = "danger-full-access"
+approval_policy = "never"
