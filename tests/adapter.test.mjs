@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createPiSitter } from '../src/index.ts';
 import { piSitterLimits } from '../src/config.ts';
+import { PiSitterEngine, classifyObservation } from '../src/core.ts';
 const validators = { '04': () => 'Saved configuration is incomplete' };
 
 const diagnosis = { issue: 'Preload path is invalid', evidence: 'Invalid preload at line 3',
@@ -384,4 +385,122 @@ test('/sitter verify runs at an idle boundary and stores one native Pi verificat
     assert.equal(h.notices.length, 1);
     assert.match(h.notices[0][0], /after the Worker turn completes/);
   } finally { delete process.env.PI_SITTER_STAGE; }
+});
+
+// Golden observations from the unchanged 0.1.0 engine. These fixtures pin trigger timing,
+// evidence, reset and suppression without granting a new tool-classification policy.
+const observation = (toolName, args, body, isError = false) => ({
+  toolCallId: `${toolName}:${JSON.stringify(args)}`, toolName, args,
+  result: { content: [{ type: 'text', text: typeof body === 'string' ? body : JSON.stringify(body) }] }, isError,
+});
+const progress = (toolName = 'project_scene_edit_set_node_property') => observation(toolName,
+  { node: 'Player', property: 'shape', value: 'circle' },
+  { receipt: { status: 'updated', changes: [{ op: 'set', before: null, after: 'circle' }] } });
+
+test('T1 fires on the second equivalent failure, deduplicates, then re-arms after same-tool progress', () => {
+  const engine = new PiSitterEngine('active');
+  const failure = line => observation('project_scripts_write', { path: 'main.ts' },
+    { ok: false, errors: [{ message: `Invalid preload at line ${line}` }] });
+  assert.equal(engine.observe(failure(3)), undefined);
+  const first = engine.observe(failure(4));
+  assert.deepEqual({ type: first?.type, evidence: first?.evidence },
+    { type: 'T1', evidence: '2 equivalent failures: [{"message":"Invalid preload at line 4"}]' });
+  assert.equal(engine.observe(failure(5)), undefined);
+  assert.equal(engine.triggerCount, 1);
+  assert.equal(engine.observe(progress('project_scripts_write')), undefined);
+  assert.equal(engine.observe(failure(6)), undefined);
+  assert.equal(engine.observe(failure(7))?.type, 'T1');
+  assert.equal(engine.triggerCount, 2);
+});
+
+test('T2 pins two enables, three discoveries, repeated setup and progress reset', () => {
+  for (const [name, threshold] of [['project_enable_toolset', 2], ['tool_search', 3], ['project_list_toolsets', 3]]) {
+    const engine = new PiSitterEngine('active');
+    const call = observation(name, { query: 'scene' }, { ok: true });
+    for (let n = 1; n < threshold; n++) assert.equal(engine.observe(call), undefined, `${name} at ${n}`);
+    assert.deepEqual({ type: engine.observe(call)?.type, count: engine.triggerCount }, { type: 'T2', count: 1 }, name);
+    assert.equal(engine.observe(call), undefined, `${name} duplicate`);
+    engine.observe(progress());
+    for (let n = 1; n < threshold; n++) assert.equal(engine.observe(call), undefined, `${name} reset at ${n}`);
+    assert.equal(engine.observe(call)?.type, 'T2');
+  }
+  const mixed = new PiSitterEngine('active');
+  const a = observation('project_list_toolsets', {}, { ok: true });
+  const b = observation('project_health_check', {}, { ok: true });
+  for (const call of [a, b, a, b]) assert.equal(mixed.observe(call), undefined);
+  assert.equal(mixed.observe(a)?.type, 'T2');
+});
+
+test('T3 runs only a configured final validator and suppresses the same milestone', () => {
+  const engine = new PiSitterEngine('active');
+  const evidence = { stage: '04', gameDir: '/project', final: true };
+  let checks = 0;
+  const validators = { '04': () => { checks++; return 'Saved configuration is incomplete'; } };
+  assert.equal(engine.milestone({ ...evidence, final: false }, validators), undefined);
+  assert.equal(engine.milestone({ ...evidence, stage: '05' }, validators), undefined);
+  assert.equal(checks, 0);
+  assert.deepEqual({ type: engine.milestone(evidence, validators)?.type, checks }, { type: 'T3', checks: 1 });
+  assert.equal(engine.milestone(evidence, validators), undefined);
+  assert.equal(checks, 2);
+});
+
+test('T4 pins no-op and repeated recovery inspection thresholds and progress reset', () => {
+  const noop = name => observation(name, { node: 'Player' }, { receipt: { status: 'noop', changes: [] } });
+  const engine = new PiSitterEngine('active');
+  assert.equal(engine.observe(noop('project_scene_edit_set_node_property')), undefined);
+  assert.equal(engine.observe(noop('project_scene_edit_set_node_property'))?.type, 'T4');
+  assert.equal(engine.observe(noop('project_scene_edit_set_node_property')), undefined);
+  engine.observe(progress());
+  assert.equal(engine.observe(noop('project_scene_edit_set_node_property')), undefined);
+  assert.equal(engine.observe(noop('project_scene_edit_set_node_property'))?.type, 'T4');
+  const opening = new PiSitterEngine('active');
+  assert.equal(opening.observe(noop('project_open_scene')), undefined);
+  assert.equal(opening.observe(noop('project_open_scene')), undefined);
+  assert.equal(opening.observe(noop('project_open_scene')), undefined);
+  assert.equal(opening.triggerCount, 0); // Existing classifier reports UNKNOWN for this name.
+  const inspection = observation('project_scene_tree', { scene: 'main' }, { nodes: [] });
+  const recovering = new PiSitterEngine('active');
+  recovering.observe(noop('project_scene_edit_set_node_property'));
+  for (let n = 1; n < 3; n++) assert.equal(recovering.observe(inspection), undefined);
+  assert.match(recovering.observe(inspection)?.evidence ?? '', /3 identical inspections/);
+  assert.equal(recovering.observe(inspection), undefined);
+  recovering.observe(progress());
+  assert.equal(recovering.observe(inspection), undefined);
+});
+
+test('tool classifiers retain current aliases and plain-text uncertainty', () => {
+  const cases = [
+    ['project_save_scene', '{"receipt":{"status":"updated","changes":[{"op":"save","before":null,"after":"saved"}]}}', 'PROGRESS'],
+    ['project_scene_tree', '{"nodes":[]}', 'INSPECTION'],
+    ['project_scripts_get_parse_errors', '{"errors":[]}', 'INSPECTION'],
+    ['project_open_scene', '{"receipt":{"status":"noop","changes":[]}}', 'UNKNOWN'],
+    ['project_enable_toolset', '{"ok":true}', 'INSPECTION'],
+    ['project_scripts_edit', 'Edited main.ts successfully', 'UNKNOWN'],
+    ['project_scripts_write', 'Wrote main.ts successfully', 'UNKNOWN'],
+  ];
+  for (const [name, body, expected] of cases)
+    assert.equal(classifyObservation(observation(name, {}, body)).kind, expected, name);
+  assert.equal(piSitterLimits().maxTriggers, 16);
+  assert.equal(piSitterLimits('{"maxTriggers":32}').maxTriggers, 32);
+  const engine = new PiSitterEngine('active', { maxTriggers: 32 });
+  for (let n = 0; n < 32; n++) engine.restoreTrigger({ type: 'T1', tool: 'x', evidence: 'x', key: `k${n}` });
+  assert.equal(engine.triggerCount, 32);
+  assert.equal(engine.budgetRemaining, 0);
+});
+
+test('Off suppresses observations and mode changes clear in-flight setup; reset clears duplicate history', () => {
+  const engine = new PiSitterEngine('off');
+  const enable = observation('project_enable_toolset', {}, { ok: true });
+  assert.equal(engine.observe(enable), undefined);
+  assert.equal(engine.recent.length, 0);
+  engine.setMode('shadow');
+  assert.equal(engine.observe(enable), undefined);
+  engine.setMode('off');
+  engine.setMode('active');
+  assert.equal(engine.observe(enable), undefined);
+  assert.equal(engine.observe(enable)?.type, 'T2');
+  engine.reset('active');
+  assert.equal(engine.triggerCount, 0);
+  assert.equal(engine.observe(enable), undefined);
+  assert.equal(engine.observe(enable)?.type, 'T2');
 });
