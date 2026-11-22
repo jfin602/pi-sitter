@@ -19,10 +19,22 @@
 - Narrowly scoped sandboxed verifier, detailed evidence-backed recovery and independent requirement-level review.
 - Multi-project and real Pi/MCP independent qualification before 1.0.
 
-## Next authorized scope
+## Audit-accepted implementation plan — /docs-apply of Issue #3
 
-This `/docs-apply` authorizes **documentation + development runner import + CI/lockfile policy only**. It does not authorize the subsequent P1 implementation stack or 1.0 publication.
+**Source baseline:** `feea1c18e74d09d5db64155268eb7d75a6198dda` before this documentation-only application. **Status:** planning APPLIED; code changes A01–A12 NOT IMPLEMENTED; full 1.0 release NOT QUALIFIED.
 
-Next: review source-gapped architecture contracts and author the P1 implementation prompt stack under `docs/tasks/p1/` in a separate owner-reviewed process. No P1 prompts have been executed.
+Four observed gaps in the [source audit](docs/tasks/p1/codebase-gap-audit.md):
+- `src/completion.ts:27–39` can declare `VERIFIED` with omitted mandatory gates or uninspected requirements. **Highest-priority correctness blocker.**
+- `src/core.ts:211–214` truncates the authored task to 700 characters, losing later original requirements.
+- `src/core.ts:84–140` can label successful plain-text `edit` and `write` receipts `UNKNOWN`; characterize provider differences but **do not change triggers without separate approval**.
+- `tests/runner/pi-sitter-runner-compat.test.mjs` assumes package version exactly `0.1.0` and no P1 prompt files; these assertions will fail upon legitimate first checkpoint/prompt authoring.
 
-Dope Codex phase runner and test port are **separate developer tools**, never a runtime Pi extension component. See [runner guide](docs/runner.md). Any CI output, native Pi/MCP observations and manual closeout must be recorded separately; do not infer GREEN from commits.
+The audit also identified stale report/replay risks, lack of host-verified source/suite/test completeness, no qualified MCP read-parity, and a broad read-only host bind in the verifier. All are **planned only**.
+
+**Verified baseline evidence (not 1.0 evidence):** [CI 44943269353](https://github.com/jfin602/pi-sitter/actions/runs/44943269353) on the audited SHA: 109 developer-runner tests and 47 Pi Sitter runtime tests passed; TS check and npm pack dry-run passed. Audit-local checks: runner 109/109, analysis 3/3; local verifier namespace could not start in that audit environment, but baseline sandbox check passed in CI. Native Pi/MCP and protected Vitest verification are **not qualified**.
+
+**Immediate next work:** F0-R (A01, A02) transition-safe runner compatibility checks and golden trigger regression inventory; then P1 (A03, A04) trusted manifest/full task capture and a shared normalized Vitest gate input. The false-`VERIFIED` negative sentinel is mandatory from P1 even though complete independent requirement review is P4. See [implementation plan](docs/tasks/p1/implementation-plan.md) and [R01–R11 ledger](docs/tasks/p1/qualification/README.md).
+
+**Unresolved owner policy:** configured advisory budget may allow 32 but accounting history holds 16; no change allowed by this documentation application. Trusted-controller ingress, new wire fields, legacy v1 read behavior and unfamiliar tool receipts require focused design/review before implementation.
+
+The original [ADR](docs/decisions/0001-ten-approved-decisions.md) remains authoritative. The developer Dope runner is separate from Pi Sitter runtime; no source, tests, prompts, package version, tags, npm publication, or runner implementation execution is authorized here.

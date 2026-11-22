@@ -28,3 +28,11 @@ Current `src/gates.ts` `schemaVersion: 1` and `src/verifier.ts` preliminary shap
 ## Qualification tests
 
 Valid mixed results, all-pass report, missing/skipped tests, duplicate IDs, altered suite digest, stale source SHA, incorrect counts, empty gates, malformed JSON, path/artifact references, cancelled and timeout runs. Every negative fails closed.
+
+## Source-audit hardening — required behavior, candidate wire schema still pending
+
+**Expected-vs-observed:** the trusted controller, not a producer-supplied gate list, owns the required gate/test manifest, task requirements and protected suite identity. Require complete declared membership, accurate executed/skipped counts, uniqueness, source freshness and bounded evidence. A missing expected gate/test, altered suite digest or snapshot cannot yield PASS. The audited `decideCompletion` false-success on a report with only A when A+B were required is a mandatory negative regression.
+
+**Single ingestion boundary:** both `src/index.ts` injected verifier and `src/verifier.ts` command verifier MUST normalize/validate through the same path *before* state persistence, UI, repair or completion. Vitest assertion failures may exit nonzero: inspect structured output even when exit nonzero and distinguish attributable FAIL from crashes, cancellations, timeouts, malformed results or isolation failures (BLOCKED). Ordinary skipped/uncovered is UNVERIFIED, never PASS.
+
+**Legacy v1:** retain original schema v1 as labeled historical evidence; never silently migrate old rows to successful current runs. Trusted manifest ingress, final field names and explicit v1 read policy need focused owner review before implementation. [Audit A03/A04/A10](../tasks/p1/codebase-gap-audit.md).

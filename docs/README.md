@@ -24,3 +24,10 @@
 - [Task index](tasks/README.md), [P1 plan](tasks/p1/README.md), [P1 qualification ledger](tasks/p1/qualification/README.md).
 
 **Status discipline:** Proposed/approved documentation is not evidence of implemented features. See `BOOT.md` before making capability claims.
+
+## Source-audited P1 implementation planning (documentation applied, code pending)
+
+- [Codebase gap audit A01–A12](tasks/p1/codebase-gap-audit.md) — observed counterexamples, source references, ownership and release blockers.
+- [Implementation dependency plan](tasks/p1/implementation-plan.md) — F0-R transition → P1–P6 work, stop rules and manual gates.
+- [Source-bound qualification matrix](tasks/p1/qualification/README.md) — all **new** qualification cases still pending; baseline CI evidence is not 1.0.
+- [Review #3](https://github.com/jfin602/pi-sitter/issues/3) — accepted documentation proposal. Original ADR Q1–Q10 unchanged; schema v1 verification remains historical/current code, not target vNext.

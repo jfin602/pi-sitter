@@ -22,3 +22,18 @@ Before authoring implementation prompts, inspect current HEAD and real Pi/MCP AP
 No public npm publication, release tag, automatic closeout, full benchmark execution or llm-zone source edits during this docs foundation. No V1 schema migration without corresponding tests and separately approved implementation.
 
 See [qualification template](qualification/README.md). An authored prompt/commit is NOT evidence of qualified functionality.
+
+## Applied source-audit execution order (Issue #3)
+
+**F0-R prerequisites before any P1 prompt execution:** A01 transition-safe `tests/runner/pi-sitter-runner-compat.test.mjs` and A02 source-anchored T1–T4 golden coverage. These are **planned fixes** to implement in a separately approved prompt. Existing triggers, runner scripts and advisory budget remain unchanged under this documentation action.
+
+| Execution phase | Audit IDs | Source focus | Key acceptance |
+| --- | --- | --- | --- |
+| F0-R | A01, A02 | runner compatibility test, `src/core.ts`, `src/config.ts`, adapter tests | Accept a valid `0.1.1` checkpoint and prompts; reject bad grammar; freeze existing triggers |
+| P1 | A03, A04 + early A10 negative | `src/core.ts`, `src/gates.ts`, `src/verifier.ts`, `src/index.ts` | Full task + trusted expected manifest; both verifier paths normalized; incomplete/all-green report not VERIFIED |
+| P2 | A05, A06 | verifier, index, verifier tests | Approved restricted run, correct milestone/final/post-repair checks, cleanup |
+| P3 | A07, A08 | broker, supervisor-session, Pi integration | Vet actual MCP read parity; deny indirect writes; source-bound receipts |
+| P4 | A09, A10, A11 | analysis, prompt, completion, index, UI tests | Causal repair; independently evidenced requirements; no stale report/replay |
+| P5–P6 | A12 | package/loader tests, multi-project fixtures, manual proof | Tarball install; end-to-end unrelated projects; real Pi/MCP and owner closeout |
+
+**Stop rules:** no advancement on a failed negative/security gate, unverified provenance, changed trigger semantics, unauthorized acceptance-test modification, schema guesswork or incomplete manual evidence. Preserve failed evidence and append a reviewed recovery task. Proposed vNext schema fields, legacy v1 handling and controller-owned ingress need focused approval before those implementation steps. See [complete A01–A12 audit](codebase-gap-audit.md) and [dependency plan](implementation-plan.md). **No prompt texts authored/executed and no version changed by this docs application.**

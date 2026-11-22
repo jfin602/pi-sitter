@@ -36,3 +36,13 @@
 | Formal benchmark/controller | Owns final status | Controls approved changes | Owns authoritative result ledger |
 
 Refer to [contracts](README.md), [current implementation](../BOOT.md), and [stability policy](stability-contract.md).
+
+## Audit-driven vNext integration design (planned)
+
+**Two independently authorized evidence ledgers:** the controller's protected acceptance suite reports test-gate facts; a separate review compares implementation artifacts with **every original requirement**. A `VERIFIED` aggregate requires both complete expected test coverage and requirement-level evidence. Current `src/completion.ts` does not enforce this yet. Bounded prompts must not truncate the controller's durable original task record (`src/core.ts` currently stores only 700 characters).
+
+**Trusted immutable identities:** task ID + requirement version, milestone/stage, verified source snapshot digest, protected suite ID/version/digest, attempt/run ID. Bind report, UI, recovery, stored replay and reruns to this identity, never `stage` alone.
+
+**Tool-observation seam:** adapt external provider names, receipt shapes and root fields without modifying T1–T4 triggering semantics. Characterize `save_scene`, `scene_tree`, `get_parse_errors`, `open_scene`, plus generic `edit`/`write` text receipts. Keep existing `gameDir` compatibility if a neutral project-root field is introduced; no Godot scoring inside core.
+
+**Test-author correction:** suspect acceptance-test defects go to the authorized suite owner; neither worker nor supervisor may amend scored tests. Historical schema v1 reports may remain readable but cannot be silently reclassified as current validated vNext PASS. [Audit A01–A12](tasks/p1/codebase-gap-audit.md).

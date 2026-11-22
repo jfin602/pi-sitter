@@ -33,3 +33,13 @@
 Evidence for each: exact Git SHA and dirty state, Node/Pi/Vitest versions, command, environment, expected/observed results, logs/artifacts or reference, PASS/FAIL/NOT RUN/BLOCKED/EVIDENCE GAP, unresolved limitations and owner disposition.
 
 Headless tests are not real Pi model inference or MCP interoperability proof. A commit, docs file or simulated positive result does not close any native or release gate.
+
+## Source-audit release blockers (A01–A12)
+
+- **F0-R:** runner compatibility must permit legitimate prompt/version progression while retaining canonical Dope script bytes, no-lock policy, grammar and manual closeout; T1–T4 before/at/after golden cases must match existing behavior. No implicit correction of 16/32 advisory budget mismatch.
+- **P1:** absent mandatory gate/test and passing export with uninspected accessibility must not yield VERIFIED; >700-character authored requirements must survive; both verifier ingestion paths fail closed; nonzero assertion failures are not silently treated as infrastructure failures.
+- **P2/P3:** unrelated host data inaccessible; writes/shell/indirect MCP mutations denied; current source, suite and run identity bound to each result; capture/outcome budgets enforced.
+- **P4:** unsupported recovery advice abstains; requirement matrix is independent; blocked retry and task/suite change never replay stale PASS or wrong recovery as current.
+- **P5/P6:** packed install in unrelated project, real Pi+MCP, and manual owner review remain required. Baseline 109 runner + 47 extension tests and npm pack dry-run do not satisfy full 1.0 release qualification.
+
+See [audit](tasks/p1/codebase-gap-audit.md), [plan](tasks/p1/implementation-plan.md) and [ledger](tasks/p1/qualification/README.md).
