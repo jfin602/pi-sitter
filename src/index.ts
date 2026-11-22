@@ -19,6 +19,8 @@ import { configuredVerifier } from './verifier.ts';
 import type { ApprovedVerifier } from './verifier.ts';
 import { checkpointContext, selectCheckpoint, type CheckpointRequest } from './checkpoints.ts';
 import { discoverProjectTestCommand, installedPiSitterVersion, type TestDiscovery } from './test-discovery.ts';
+import { approvedPlanId, assessVerificationReadiness, configuredPlanId,
+  type VerificationReadiness } from './verification-readiness.ts';
 import { InterventionLifecycle, type InterventionEvent } from './intervention-lifecycle.ts';
 
 const STATUS_KEY = 'pi-sitter-status';
@@ -45,7 +47,11 @@ const WORKER_RECOVERY_TYPE = 'pi-sitter-worker-recovery';
 const TASK_HISTORY_TYPE = 'pi-sitter-task-history';
 const CONTROLLER_TYPE = 'pi-sitter-controller-inventory';
 const STARTUP_TYPE = 'pi-sitter-startup';
+const READINESS_TYPE = 'pi-sitter-readiness';
+const EMPTY_FINAL_TYPE = 'pi-sitter-empty-final';
+const EMPTY_FINAL_MESSAGE_TYPE = 'pi-sitter-empty-final-followup';
 const MAX_NO_PROGRESS_RETRIES = 1;
+interface EmptyFinalEntry { stage: string; messageEntryId: string; phase: 'continuing' | 'stopped' }
 type RecoveryEntry = { attempt: number; plan: RecoveryPlan; delivery: string; retry?: number; displayId?: string };
 type RecoveryRequest = { id: string; stage: string; reset: boolean; unavailable?: string };
 
@@ -65,6 +71,7 @@ interface SupervisorCard {
   status: string;
   summary: string;
   details?: string[];
+  hint?: string;
   tone?: CardTone;
 }
 
@@ -78,13 +85,14 @@ function supervisorCard(theme: Theme, card: SupervisorCard, width: number): stri
   const statusFg = dark ? (tone === 'normal' ? SUPERVISOR_ACCENT : tone === 'pending' ? PENDING_FG : SUPERVISOR_FG) :
     tone === 'recovery' ? 'warning' : tone === 'failure' ? 'error' : tone === 'pending' ? PENDING_LIGHT_FG : 'accent';
   const spacer = theme.style(' '.repeat(width), { bg });
-  const rows: { text: string; kind?: 'title' | 'status' }[] = [
+  const rows: { text: string; kind?: 'title' | 'status' | 'hint' }[] = [
     { text: ' Pi Sitter', kind: 'title' },
     { text: ` Stage ${card.stage ?? 'not recorded'}` },
     { text: ` ${card.status}`, kind: 'status' },
     { text: '' },
     { text: ` ${card.summary}` },
     ...(card.details?.length ? [{ text: '' }, ...card.details.map(text => ({ text: ` ${text}` }))] : []),
+    ...(card.hint ? [{ text: '' }, { text: ` ${card.hint}`, kind: 'hint' as const }] : []),
   ];
   const wrapped = rows.flatMap(row => row.text.split('\n').flatMap(text => {
     const chars = Array.from(text);
@@ -97,10 +105,17 @@ function supervisorCard(theme: Theme, card: SupervisorCard, width: number): stri
   return [spacer, ...wrapped.map(row => {
     const padding = ' '.repeat(width - Array.from(row.text).length);
     return theme.style(row.text + padding, {
-      fg: row.kind === 'title' ? titleFg : row.kind === 'status' ? statusFg : fg,
+      fg: row.kind === 'title' ? titleFg : row.kind === 'status' ? statusFg : row.kind === 'hint' ? 'muted' : fg,
       bg, bold: row.kind === 'title' || row.kind === 'status',
     });
   }), spacer];
+}
+
+function quotedText(value: string): string[] {
+  // Rejected model text has not passed field validation; render control bytes visibly.
+  const safe = value.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g,
+    char => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`);
+  return safe.split('\n').map(line => `> ${line}`);
 }
 
 interface OutcomeEntry {
@@ -135,6 +150,12 @@ export interface PiSitterDependencies {
     signal: AbortSignal) => Promise<unknown>;
   /** Host-owned execution registry; the environment setting supplies only its identifier. */
   resolveApprovedVerifier?: (id: string, checkpoint?: import('./checkpoints.ts').CheckpointSelection) => ApprovedVerifier | undefined;
+  /** A trusted host may select only an ID from its own approved verifier registry. */
+  verificationSetup?: {
+    getSelectedPlanId?: (stage: string, projectRoot: string) => string | undefined;
+    selectApprovedPlan?: (id: string, stage: string, projectRoot: string) => void;
+    preflight?: (stage: string, projectRoot: string, planId?: string) => { ready: boolean; reason?: string };
+  };
   /** Host-owned milestone signal. A missing signal uses final/post-repair settlement cadence. */
   loadCheckpoint?: (stage: string, projectRoot: string) => CheckpointRequest | undefined;
   recoveryPlan?: typeof createRecoveryPlan;
@@ -191,6 +212,15 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     let lastCompletion: CompletionRecord | undefined;
     let testDiscovery: TestDiscovery = { kind: 'unknown', reason: 'Project has not been inspected' };
     let noTestsMode = false;
+    let selectedPlanId: string | undefined;
+    let readinessState: VerificationReadiness | undefined;
+    let readinessSignature = '';
+    let configurationError: string | undefined;
+    let controllerConfigurationError: string | undefined;
+    let emptyFinalContinuationIssued = false;
+    let emptyFinalTerminalIssued = false;
+    let unavailableAtCompletionIssued = false;
+    const handledEmptyFinalMessages = new Set<string>();
     const verificationCards = new Map<string, CompletionRecord | 'interrupted' | undefined>();
     let pendingVerificationId: string | undefined;
     const recoveryCards = new Map<string, RecoveryEntry | 'interrupted' | undefined>();
@@ -245,6 +275,62 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       recoveryKeys.clear();
       lastRecovery = undefined;
       recoveryTurnObserved = false;
+      emptyFinalContinuationIssued = false;
+      emptyFinalTerminalIssued = false;
+      unavailableAtCompletionIssued = false;
+      handledEmptyFinalMessages.clear();
+    }
+
+    function protectedVerifierAvailable(): boolean {
+      return Boolean(controllerContext && (dependencies.verify ||
+        (selectedPlanId && dependencies.resolveApprovedVerifier)));
+    }
+
+    function verifierRequested(): boolean {
+      return Boolean(dependencies.verify || selectedPlanId || process.env.PI_SITTER_VERIFY_COMMAND);
+    }
+
+    function refreshSelectedPlan(ctx: ExtensionContext): void {
+      try {
+        const fromHost = dependencies.verificationSetup?.getSelectedPlanId;
+        selectedPlanId = fromHost ? fromHost(engine.stage, ctx.cwd) : configuredPlanId(process.env.PI_SITTER_VERIFY_COMMAND);
+        if (selectedPlanId) selectedPlanId = approvedPlanId(selectedPlanId);
+        configurationError = controllerConfigurationError;
+      } catch (error) {
+        selectedPlanId = undefined;
+        configurationError = error instanceof Error ? error.message : 'Invalid verifier selection';
+      }
+    }
+
+    function refreshReadiness(ctx: ExtensionContext): VerificationReadiness {
+      refreshTestDiscovery(ctx);
+      refreshSelectedPlan(ctx);
+      let hostCheck: { ready: boolean; reason?: string } | undefined;
+      try { hostCheck = dependencies.verificationSetup?.preflight?.(engine.stage, ctx.cwd, selectedPlanId); }
+      catch (error) { hostCheck = { ready: false, reason: error instanceof Error ? error.message : 'Host preflight failed' }; }
+      readinessState = assessVerificationReadiness({ candidate: testDiscovery,
+        controller: !!controllerContext,
+        verifier: Boolean(dependencies.verify || selectedPlanId && dependencies.resolveApprovedVerifier),
+        requirementReview: Boolean(dependencies.reviewRequirements && dependencies.evidenceBroker),
+        planId: selectedPlanId, hostCheck, configurationError });
+      return readinessState;
+    }
+
+    function announceReadiness(ctx: ExtensionContext): void {
+      if (engine.mode === 'off') return;
+      const value = refreshReadiness(ctx);
+      const signature = `${ctx.sessionManager.getSessionId()}:${engine.stage}:${value.status}:${value.summary}`;
+      readinessSignature = signature;
+      if (ctx.sessionManager.getBranch().some(entry => entry.type === 'custom' &&
+          entry.customType === READINESS_TYPE && (entry.data as { signature?: string } | undefined)?.signature === signature)) return;
+      pi.appendEntry(READINESS_TYPE, { signature, stage: engine.stage, ...value });
+      if (ctx.hasUI && value.status !== 'READY') ctx.ui.notify(value.summary, 'warning');
+    }
+
+    function unavailableAtCompletionReason(): string {
+      const candidate = testDiscovery.kind === 'candidate' ?
+        ` Discovered ${testDiscovery.command} is informational and was not run or approved as a protected acceptance suite.` : '';
+      return `Protected final verification unavailable: the host has not configured a trusted controller and approved verifier.${candidate}`;
     }
 
     function beginPendingVerification(ctx: ExtensionContext): void {
@@ -379,7 +465,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     function refreshTestDiscovery(ctx: ExtensionContext): void {
       testDiscovery = discoverProjectTestCommand(ctx.cwd);
       noTestsMode = testDiscovery.kind === 'none' && !controllerContext &&
-        !dependencies.verify && !process.env.PI_SITTER_VERIFY_COMMAND;
+        !verifierRequested();
     }
 
     function testSetupSummary(): string {
@@ -441,10 +527,11 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     }
 
     function finishIntervention(id: string, trigger: Trigger, phase: InterventionEvent['phase'],
-      outcome: InferenceOutcome, source?: OutcomeEntry['source'], delivered = false): void {
+      outcome: InferenceOutcome, source?: OutcomeEntry['source'], delivered = false, workerPrompt?: string): void {
       const event: InterventionEvent = { id, phase, trigger: trigger.key, stage: engine.stage,
         issue: outcome.diagnosis?.issue, evidence: outcome.diagnosis?.evidence,
-        nextAction: outcome.diagnosis?.next_action, reason: outcome.reason, source, delivered };
+        nextAction: outcome.diagnosis?.next_action, reason: outcome.reason, source, delivered,
+        workerPrompt, rejectedResponses: outcome.rejectedResponses };
       if (interventions.apply(event)) try { pi.appendEntry(INTERVENTION_TYPE, event); }
       catch { /* A transcript write failure must not change Worker control. */ }
     }
@@ -503,6 +590,9 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       render(ctx);
       let attemptContext: ControllerContext | undefined;
       try {
+        refreshSelectedPlan(ctx);
+        if (configurationError) throw new Error(`Verifier selection blocked: ${configurationError}`);
+        const planAtStart = selectedPlanId;
         const suppliedAtStart = dependencies.loadControllerContext?.(engine.stage, ctx.cwd);
         if (!suppliedAtStart) throw new Error('Trusted controller task and protected suite are not configured');
         const authoritative = validateControllerContext(suppliedAtStart, engine.stage);
@@ -515,11 +605,18 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         pi.appendEntry(CHECKPOINT_TYPE, checkpoint);
         controllerContext = authoritative;
         engine.setTask(authoritative.originalTask.text, authoritative.stage);
-        const run = dependencies.verify ?? configuredVerifier(undefined, dependencies.resolveApprovedVerifier);
+        const preflight = dependencies.verificationSetup?.preflight?.(engine.stage, ctx.cwd, selectedPlanId);
+        if (preflight && !preflight.ready)
+          throw new Error(`Host verification preflight failed: ${preflight.reason || 'approved plan unavailable'}`);
+        const run = dependencies.verify ?? configuredVerifier(selectedPlanId ? JSON.stringify(selectedPlanId) : undefined,
+          dependencies.resolveApprovedVerifier);
         if (!run) throw new Error('No verification provider is configured for this project');
         const raw = await run(engine.stage, ctx.cwd, { signal: current.signal, previous: previousReport, ctx,
           checkpoint });
         if (current.signal.aborted || engine.sessionId !== sessionId) return {};
+        refreshSelectedPlan(ctx);
+        if (configurationError || selectedPlanId !== planAtStart)
+          throw new Error('Approved verifier selection changed during verification');
         const suppliedAtEnd = dependencies.loadControllerContext?.(engine.stage, ctx.cwd);
         if (!suppliedAtEnd) throw new Error('Trusted controller task and protected suite are not configured');
         const currentContext = validateControllerContext(suppliedAtEnd, engine.stage);
@@ -565,6 +662,10 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         pi.appendEntry(VERIFICATION_TYPE, report);
         lastReport = report;
         const decision = decideCompletion(report, undefined, authoritative, review);
+        if (emptyFinalTerminalIssued && decision.decision === 'VERIFIED') {
+          decision.decision = 'UNVERIFIED';
+          decision.reason = 'Worker stopped without a final report after one continuation; completion remains unconfirmed';
+        }
         verificationElapsedMs = Math.round(performance.now() - verificationStartedAt);
         const completion: CompletionRecord = { stage: report.stage, task: authoritative.originalTask.text, runId: report.runId,
           decision: decision.decision,
@@ -617,6 +718,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       const input = { task: engine.task, stage: engine.stage, trigger, recent: engine.recent,
         workerTools: pi.getActiveTools() };
       let outcome: InferenceOutcome = { kind: 'failed', latencyMs: 0, reason: 'No inference attempted' };
+      const rejectedResponses: string[] = [];
       try {
         const infer = dependencies.diagnose ?? runInference;
         for (let attempt = 0; attempt < 2 && remaining() > 0 && !current.signal.aborted; attempt++) {
@@ -637,6 +739,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
             view.stream(supervisorActivity);
             scheduleRender(ctx);
           }, dependencies.loadedCheck, retryBuilder);
+          if (outcome.invalidOutput && outcome.rawResponse) rejectedResponses.push(outcome.rawResponse);
           totalLatencyMs += outcome.latencyMs;
           inputTokens += outcome.inputTokens ?? 0;
           outputTokens += outcome.outputTokens ?? 0;
@@ -666,6 +769,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       if (current.signal.aborted || stale) {
         outcome = { kind: 'canceled', latencyMs: outcome.latencyMs, reason: 'Pi Sitter disabled or session changed' };
       }
+      if (rejectedResponses.length) outcome = { ...outcome, rejectedResponses };
       if (stale) return { outcome, modeAtStart, stale };
       if (engine.mode !== 'off') {
         if (outcome.kind === 'ready') view.finish('ready', `${outcome.diagnosis!.issue} — ${outcome.diagnosis!.next_action}`);
@@ -698,6 +802,20 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         return lines;
       }, invalidate() {} };
     });
+    pi.registerEntryRenderer<{ signature: string; stage: string; status: VerificationReadiness['status']; summary: string;
+      missing: string[] }>(READINESS_TYPE, (entry, { expanded }, theme) => {
+      const value = entry.data;
+      if (!value?.signature) return;
+      return { render(width: number) {
+        const current = value.signature === readinessSignature;
+        return supervisorCard(theme, { stage: value.stage,
+          status: current ? value.status : 'HISTORICAL',
+          summary: current ? value.summary : 'Historical setup status; current host configuration must be checked again',
+          details: current && expanded ? value.missing.map(item => `Missing: ${item}`) : [],
+          tone: current && value.status === 'READY' ? 'normal' : current && value.status === 'NO_TESTS' ? 'pending' : 'failure',
+        }, width);
+      }, invalidate() {} };
+    });
     pi.registerEntryRenderer<OutcomeEntry>(OUTCOME_TYPE, (entry, { expanded }, theme) => {
       const data = entry.data;
       if (!data) return;
@@ -715,9 +833,11 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       if (!saved?.id) return;
       if (saved.phase !== 'started' && interventions.hasStart(saved.id)) return;
       if (saved.phase !== 'started' && interventions.get(saved.id) !== saved) return;
+      let open = expanded;
       return { render(width: number) {
         const state = interventions.get(saved.id) ?? saved;
         const pending = state.phase === 'started';
+        const hasMore = !!state.workerPrompt || !!state.rejectedResponses?.length;
         const summary = pending ? `${state.description ?? 'Investigating trigger…'} ◌` :
           state.phase === 'failed' || state.phase === 'cancelled' ?
             state.reason ?? state.issue ?? 'Supervision ended without a result' :
@@ -727,12 +847,21 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
             state.delivered ? 'GUIDANCE' : 'DIAGNOSED' : state.phase.toUpperCase(),
           summary,
           details: !pending ? [state.nextAction && `Next: ${state.nextAction}`,
-            expanded && state.evidence && `Evidence: ${state.evidence}`,
-            expanded && state.reason && `Outcome: ${state.reason}`]
+            open && state.evidence && `Evidence: ${state.evidence}`,
+            open && state.reason && `Outcome: ${state.reason}`,
+            ...(open && state.workerPrompt ? ['Full prompt supplied to Worker:', ...quotedText(state.workerPrompt)] : []),
+            ...(open ? (state.rejectedResponses ?? []).flatMap((response, index) =>
+              [`Rejected supervisor response ${index + 1} (not sent to Worker):`, ...quotedText(response)]) : [])]
             .filter((value): value is string => !!value) : [],
+          hint: hasMore ? `Click to show ${open ? 'less' : 'more'}` : undefined,
           tone: pending || state.phase === 'cancelled' ? 'pending' : state.phase === 'failed' ? 'failure' : 'normal',
         }, width);
-      }, invalidate() {} };
+      }, invalidate() {}, handleMouse(event) {
+        const state = interventions.get(saved.id) ?? saved;
+        if (event.type !== 'click' || event.button !== 'left' || (!state.workerPrompt && !state.rejectedResponses?.length)) return;
+        open = !open;
+        return { handled: true };
+      } };
     });
     pi.registerMessageRenderer(ADVISORY_TYPE, (message, _options, theme) => ({
       render(width: number) {
@@ -856,6 +985,17 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           summary: 'Repair the failed gates in the current Worker task', details: lines, tone: 'recovery' }, width);
       }, invalidate() {},
     }));
+    pi.registerEntryRenderer<EmptyFinalEntry>(EMPTY_FINAL_TYPE, (entry, _options, theme) => {
+      const value = entry.data;
+      if (value?.phase !== 'stopped') return;
+      return { render(width: number) { return supervisorCard(theme, { stage: value.stage,
+        status: 'UNVERIFIED', summary: 'Worker stopped without a final report after one continuation. Required checks and completion remain unconfirmed.',
+        tone: 'failure',
+      }, width); }, invalidate() {} };
+    });
+    pi.registerMessageRenderer(EMPTY_FINAL_MESSAGE_TYPE, () => ({
+      render() { return []; }, invalidate() {},
+    }));
 
     pi.on('session_start', (_event, ctx) => {
       try {
@@ -889,6 +1029,15 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         recoveryKeys.clear();
         lastRecovery = undefined;
         recoveryTurnObserved = false;
+        emptyFinalContinuationIssued = false;
+        emptyFinalTerminalIssued = false;
+        unavailableAtCompletionIssued = false;
+        selectedPlanId = undefined;
+        readinessState = undefined;
+        readinessSignature = '';
+        configurationError = undefined;
+        controllerConfigurationError = undefined;
+        handledEmptyFinalMessages.clear();
         workerState = 'Running';
         verificationActivity = 'Waiting for completion';
         verificationElapsedMs = 0;
@@ -914,6 +1063,14 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
             if (saved.stage === stage && typeof saved.task === 'string' && saved.task.length <= 65536) historicalTask = saved.task;
           }
           if (entry.customType === MODE_TYPE && (entry.data === 'off' || entry.data === 'shadow' || entry.data === 'active')) engine.setMode(entry.data);
+          if (entry.customType === EMPTY_FINAL_TYPE && entry.data && typeof entry.data === 'object') {
+            const saved = entry.data as EmptyFinalEntry;
+            if (saved.stage === stage && typeof saved.messageEntryId === 'string') {
+              handledEmptyFinalMessages.add(saved.messageEntryId);
+              if (saved.phase === 'continuing') emptyFinalContinuationIssued = true;
+              if (saved.phase === 'stopped') emptyFinalTerminalIssued = true;
+            }
+          }
           if (entry.customType === INTERVENTION_TYPE && entry.data && typeof entry.data === 'object')
             interventions.apply(entry.data as InterventionEvent);
           if (entry.customType === EVENT_TYPE && entry.data && typeof entry.data === 'object') engine.restoreTrigger(entry.data as Trigger);
@@ -933,6 +1090,8 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           }
           if (entry.customType === VERIFICATION_PENDING_TYPE && entry.data && typeof entry.data === 'object') {
             const saved = entry.data as { id?: string; stage?: string; unavailable?: string };
+            if (saved.stage === stage && saved.unavailable?.startsWith('Protected final verification unavailable:'))
+              unavailableAtCompletionIssued = true;
             if (saved.stage === stage && saved.id && !saved.unavailable) verificationCards.set(saved.id, undefined);
           }
           if (entry.customType === RECOVERY_REQUEST_TYPE && entry.data && typeof entry.data === 'object') {
@@ -1030,6 +1189,10 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
                   controllerContext, lastReport);
               }
               const decision = decideCompletion(lastReport, undefined, controllerContext, review);
+              if (emptyFinalTerminalIssued && decision.decision === 'VERIFIED') {
+                decision.decision = 'UNVERIFIED';
+                decision.reason = 'Worker stopped without a final report after one continuation; completion remains unconfirmed';
+              }
               lastCompletion = { ...lastCompletion, decision: decision.decision, reason: decision.reason,
                 counts: lastReport.counts, failedGateIds: lastReport.gates.filter(gate => gate.result === 'FAIL').map(gate => gate.id),
                 unverifiedGateIds: lastReport.gates.filter(gate => gate.result === 'UNVERIFIED').map(gate => gate.id) };
@@ -1047,23 +1210,28 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         if (lastReport && lastCompletion?.decision === 'RECOVERY_REQUIRED' && sameAttempt(lastReport, lastCompletion))
           recoveryPlan = (dependencies.recoveryPlan ?? createRecoveryPlan)(lastReport, lastCompletion.task);
         engine.sessionId = ctx.sessionManager.getSessionId();
+        refreshSelectedPlan(ctx);
         refreshTestDiscovery(ctx);
         const version = installedPiSitterVersion();
-        const verifierConfigured = Boolean(controllerContext && (dependencies.verify ||
-          (process.env.PI_SITTER_VERIFY_COMMAND && dependencies.resolveApprovedVerifier)));
+        const verifierConfigured = protectedVerifierAvailable();
         const text = `Pi Sitter ${version} · ${engine.mode} · ${testSetupSummary()} · Protected verification: ${verifierConfigured ? 'host configured' : 'unavailable'}`;
         const signature = `${version}:${ctx.cwd}:${engine.mode}:${text}`;
         if (!ctx.sessionManager.getBranch().some(entry => entry.type === 'custom' &&
             entry.customType === STARTUP_TYPE && (entry.data as { signature?: string } | undefined)?.signature === signature))
           try { pi.appendEntry(STARTUP_TYPE, { signature, text }); }
           catch { /* Startup display cannot invalidate restored verification state. */ }
+        try { announceReadiness(ctx); }
+        catch { /* A display error cannot authorize verification. */ }
         lastStatus = lastWidget = '';
         render(ctx);
-      } catch {
+      } catch (error) {
         controllerContext = undefined;
         lastReport = undefined;
         lastCompletion = undefined;
         recoveryPlan = undefined;
+        controllerConfigurationError = error instanceof Error ? error.message : 'Host setup could not be read';
+        configurationError = controllerConfigurationError;
+        try { announceReadiness(ctx); } catch { /* Preserve failed-closed setup state. */ }
       }
     });
 
@@ -1093,14 +1261,19 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
             pi.appendEntry(TASK_HISTORY_TYPE, { stage: engine.stage, task: engine.task });
           }
           workerToolNames.length = 0;
+          refreshCurrentContext(ctx);
+          if (controllerContext) controllerConfigurationError = undefined;
+          announceReadiness(ctx);
         }
         if (event.messageType === 'custom') workerState = 'Recovering';
-      } catch {
+      } catch (error) {
         if (event.messageType === 'user' && dependencies.loadControllerContext) {
           controllerContext = undefined;
           lastReport = undefined;
           lastCompletion = undefined;
           recoveryPlan = undefined;
+          controllerConfigurationError = error instanceof Error ? error.message : 'Host controller could not be read';
+          try { announceReadiness(ctx); } catch { /* The Worker remains unverified. */ }
         }
       }
     });
@@ -1241,7 +1414,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         view.finish('delivered', `${diagnosis.issue} — ${diagnosis.next_action}`);
         supervisorActivity = source === 'fallback' ? 'Fallback delivered; Worker continuing' : 'Advisory delivered; Worker continuing';
         const content = advisoryText(trigger, outcome);
-        finishIntervention(interventionId, trigger, 'completed', outcome, source, true);
+        finishIntervention(interventionId, trigger, 'completed', outcome, source, true, content);
         try { recordOutcome(trigger, outcome, 'delivered', source, interventionId); render(ctx); } catch { /* Metadata is best effort. */ }
         awaitingContext.add(content);
         return { entries: [...event.entries, { type: 'custom_message' as const,
@@ -1258,9 +1431,39 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       }
     });
 
+    pi.on('turn_end', event => {
+      if (event.outcome !== 'completed' || engine.mode === 'off' ||
+          event.message.role !== 'assistant' || event.message.stopReason !== 'stop' ||
+          event.toolResults.length > 0 || !event.messageEntryId ||
+          event.message.content.some(part => part.type === 'text' ? !!part.text.trim() : part.type !== 'thinking') ||
+          handledEmptyFinalMessages.has(event.messageEntryId)) return;
+      handledEmptyFinalMessages.add(event.messageEntryId);
+      if (emptyFinalContinuationIssued) {
+        if (emptyFinalTerminalIssued) return;
+        emptyFinalTerminalIssued = true;
+        return { entries: [...event.entries, { type: 'custom' as const, customType: EMPTY_FINAL_TYPE,
+          data: { stage: engine.stage, messageEntryId: event.messageEntryId, phase: 'stopped' } satisfies EmptyFinalEntry }] };
+      }
+      emptyFinalContinuationIssued = true;
+      const prompt = '[Pi Sitter completion follow-up — extension generated] Your previous turn stopped without a final report. Finish the original task’s required checks, including project tests when required. Report the exact commands and results, what you completed, and any remaining gaps. If a check cannot run, say why. Do not claim protected verification passed without trusted evidence.';
+      return { entries: [...event.entries,
+        { type: 'custom' as const, customType: EMPTY_FINAL_TYPE,
+          data: { stage: engine.stage, messageEntryId: event.messageEntryId, phase: 'continuing' } satisfies EmptyFinalEntry },
+        { type: 'custom_message' as const, customType: EMPTY_FINAL_MESSAGE_TYPE, content: prompt, display: false }],
+        continue: true };
+    });
+
+    pi.on('agent_before_settle', (event, ctx) => {
+      if (event.outcome !== 'completed' || engine.mode === 'off' || !engine.stage || unavailableAtCompletionIssued) return;
+      refreshTestDiscovery(ctx);
+      if (protectedVerifierAvailable()) return;
+      unavailableAtCompletionIssued = true;
+      showUnavailableVerification(unavailableAtCompletionReason());
+    });
+
     pi.on('agent_before_settle', (event, ctx) => {
       if (event.outcome !== 'completed' || engine.mode === 'off' || !engine.stage ||
-          !(dependencies.verify || process.env.PI_SITTER_VERIFY_COMMAND)) return;
+          !verifierRequested()) return;
       try {
         const request = dependencies.loadCheckpoint?.(engine.stage, ctx.cwd);
         const raw = dependencies.loadControllerContext?.(engine.stage, ctx.cwd);
@@ -1291,7 +1494,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     });
 
     pi.on('agent_before_settle', async (event, ctx) => {
-      if (event.outcome !== 'completed' || engine.mode === 'off' || !engine.stage || !(dependencies.verify || process.env.PI_SITTER_VERIFY_COMMAND)) return;
+      if (event.outcome !== 'completed' || engine.mode === 'off' || !engine.stage || !verifierRequested()) return;
       refreshCurrentContext(ctx, true);
       const prerequisite = dependencies.completionReady?.(workerToolNames, pi.getActiveTools());
       if (prerequisite) {
@@ -1386,7 +1589,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           render(ctx);
         }
       }
-      if (completion.decision !== 'RECOVERY_REQUIRED' || !currentRecovery() || !recoveryPlan) return;
+      if (emptyFinalTerminalIssued || completion.decision !== 'RECOVERY_REQUIRED' || !currentRecovery() || !recoveryPlan) return;
       if (noProgressRetryReady(report)) {
         const retry = beginNoProgressRetry(ctx);
         return { entries: [...event.entries,
@@ -1469,14 +1672,36 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     });
 
     pi.registerCommand('sitter', {
-      description: 'Pi Sitter: status, gates, report, recover, verify, off, shadow, on',
-      getArgumentCompletions: prefix => ['status', 'gates', 'report', 'recover', 'verify', 'off', 'shadow', 'on']
+      description: 'Pi Sitter: setup, use, status, gates, report, recover, verify, off, shadow, on',
+      getArgumentCompletions: prefix => ['setup', 'use', 'status', 'gates', 'report', 'recover', 'verify', 'off', 'shadow', 'on']
         .filter(value => value.startsWith(prefix)).map(value => ({ value, label: value })),
       handler: async (args, ctx) => {
         try {
-          const command = args.trim().toLowerCase();
+          const words = args.trim().split(/\s+/);
+          const command = words[0]?.toLowerCase() ?? '';
           if (['status', 'gates', 'report', 'recover', 'verify'].includes(command)) refreshCurrentContext(ctx);
           if (!command) view.toggle();
+          else if (command === 'setup') {
+            refreshCurrentContext(ctx);
+            const state = refreshReadiness(ctx);
+            const script = state.candidate.kind === 'candidate' && state.candidate.script ?
+              `\npackage.json test script: ${JSON.stringify(state.candidate.script)}` : '';
+            ctx.ui.notify(`${state.status}: ${state.summary}${script}\n${state.missing.length ?
+              `Missing: ${state.missing.join(', ')}. ` : ''}A protected suite and controller must be configured by the host outside Worker write access.`,
+              state.status === 'READY' ? 'info' : 'warning');
+          }
+          else if (command === 'use') {
+            if (words.length !== 2) throw new Error('Use /sitter use <approved-plan-id>');
+            const id = approvedPlanId(words[1]);
+            const setup = dependencies.verificationSetup;
+            if (!setup?.selectApprovedPlan || !setup.getSelectedPlanId)
+              throw new Error('This host does not support plan selection; configure an approved verifier in the host launcher');
+            setup.selectApprovedPlan(id, engine.stage, ctx.cwd);
+            refreshSelectedPlan(ctx);
+            if (selectedPlanId !== id) throw new Error('Host did not confirm the selected verifier plan');
+            announceReadiness(ctx);
+            ctx.ui.notify(`Pi Sitter selected host-approved plan ${id}; ${readinessState?.summary}`, 'info');
+          }
           else if (command === 'verify') {
             refreshTestDiscovery(ctx);
             const unavailable = !ctx.isIdle() ? 'Run /sitter verify after the Worker turn completes' :
@@ -1504,8 +1729,8 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
             }
           }
           else if (command === 'status') {
-            refreshTestDiscovery(ctx);
-            ctx.ui.notify(`Pi Sitter ${engine.mode}; ${testSetupSummary()}; Worker ${workerState}; stage ${engine.stage || 'unset'}; gates ${lastCompletion?.decision ?? 'pending'}; ${verificationActivity}; verification ${verificationElapsedMs} ms (${verificationRuns}/${limits.maxCompletionVerifications}); recovery ${recoveryAttempts}/${limits.maxRecoveryAttempts}; diagnosis ${completionDiagnosisCalls}/1; recovery generation ${recoveryGenerationCalls}/1; unresolved ${unresolvedIds().join(', ') || 'none'}; ${attemptLabel(lastCompletion)}; status ${view.phase}${view.result ? `: ${view.result}` : ''}; last rejected ${lastRejectedReason || "none"}; triggers ${engine.triggerCount}; inference ${calls}/${limits.maxInferenceAttempts}; valid ${validDiagnoses}; model delivered ${modelAdvisories}/${limits.maxValidAdvisories}; fallback delivered ${fallbackAdvisories}/${limits.maxFallbackAdvisories}; delivered ${delivered}; confirmed ${confirmedDeliveries}; failed deliveries ${failedDeliveries}; Worker recoveries ${workerRecoveries}; abstained ${abstained}; failed ${failed}; budget ${remaining()}; tokens ${inputTokens}/${outputTokens}; latency ${totalLatencyMs} ms; observer ${engine.overheadMs.toFixed(1)} ms`, 'info');
+            const state = refreshReadiness(ctx);
+            ctx.ui.notify(`Pi Sitter ${engine.mode}; readiness ${state.status}; ${testSetupSummary()}; Worker ${workerState}; stage ${engine.stage || 'unset'}; gates ${lastCompletion?.decision ?? 'pending'}; ${verificationActivity}; verification ${verificationElapsedMs} ms (${verificationRuns}/${limits.maxCompletionVerifications}); recovery ${recoveryAttempts}/${limits.maxRecoveryAttempts}; diagnosis ${completionDiagnosisCalls}/1; recovery generation ${recoveryGenerationCalls}/1; unresolved ${unresolvedIds().join(', ') || 'none'}; ${attemptLabel(lastCompletion)}; status ${view.phase}${view.result ? `: ${view.result}` : ''}; last rejected ${lastRejectedReason || "none"}; triggers ${engine.triggerCount}; inference ${calls}/${limits.maxInferenceAttempts}; valid ${validDiagnoses}; model delivered ${modelAdvisories}/${limits.maxValidAdvisories}; fallback delivered ${fallbackAdvisories}/${limits.maxFallbackAdvisories}; delivered ${delivered}; confirmed ${confirmedDeliveries}; failed deliveries ${failedDeliveries}; Worker recoveries ${workerRecoveries}; abstained ${abstained}; failed ${failed}; budget ${remaining()}; tokens ${inputTokens}/${outputTokens}; latency ${totalLatencyMs} ms; observer ${engine.overheadMs.toFixed(1)} ms`, 'info');
           } else if (command === 'gates') {
             const gates = controllerContext?.suite.gates ?? [];
             ctx.ui.notify(gates.length ? `Host-provided protected gates for ${engine.stage}:\n${gates.map(gate => `${gate.id}: ${lastReport?.gates.find(row => row.id === gate.id)?.result ?? 'PENDING'} — requirements ${gate.requirementIds.join(', ')}`).join('\n')}` : 'No trusted gate contract is available for this stage', gates.length ? 'info' : 'warning');
@@ -1550,7 +1775,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
             engine.setMode(mode);
             pi.appendEntry(MODE_TYPE, mode);
             ctx.ui.notify(`Pi Sitter ${mode}`, 'info');
-          } else ctx.ui.notify('Use /sitter [status|gates|report|recover|verify|off|shadow|on]', 'info');
+          } else ctx.ui.notify('Use /sitter [setup|use <approved-plan-id>|status|gates|report|recover|verify|off|shadow|on]', 'info');
           render(ctx);
         } catch (error) {
           ctx.ui.notify(`Pi Sitter command could not complete: ${error instanceof Error ? error.message.slice(0, 160) : 'unknown error'}`, 'warning');

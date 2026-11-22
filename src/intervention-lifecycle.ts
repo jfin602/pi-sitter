@@ -13,6 +13,8 @@ export interface InterventionEvent {
   reason?: string;
   source?: 'model' | 'fallback';
   delivered?: boolean;
+  workerPrompt?: string;
+  rejectedResponses?: string[];
 }
 
 export class InterventionLifecycle {

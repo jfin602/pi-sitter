@@ -50,6 +50,10 @@ if (mode === 'network') {
   socket.destroy();
   if (evidence !== 'ENETUNREACH') throw Error(evidence);
 }
+if (mode === 'runtime') {
+  if (!existsSync('/usr/bin/true')) throw Error('approved runtime executable unavailable');
+  evidence = 'approved runtime executable visible';
+}
 const result = mode === 'fail' || mode === 'crash' ? 'FAIL' : 'PASS';
 console.log(JSON.stringify({ schemaVersion: 2, taskId: 'fixture', runId: 'run-1', stage: process.env.PI_SITTER_STAGE,
  snapshotIdentity: '${sha}', suite: { id: 'suite', version: 'v1', digest: '${digest}' },
@@ -70,6 +74,19 @@ test('approved source and suite are read-only; host secrets absent; scratch writ
     assert.equal(normalizeGateReport(report, context).gates[0].result, 'PASS');
     assert.match(report.gates[0].tests[0].evidence, /scratch writable/);
     assert.equal(await readFile(join(f.source, 'source.txt'), 'utf8'), 'unchanged');
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test('only host-approved individual runtime executables are mounted', async () => {
+  const f = await fixture();
+  try {
+    const plan = { ...f.plan('runtime'), runtimeExecutables: ['/usr/bin/true'] };
+    const report = await approvedVerifier(plan)('current', f.live, {});
+    assert.match(report.gates[0].tests[0].evidence, /approved runtime executable visible/);
+    assert.throws(() => approvedVerifier({ ...plan, runtimeExecutables: ['/usr/bin/true', '/../bin/sh'] }),
+      /invalid trusted execution plan/);
+    await assert.rejects(approvedVerifier({ ...plan, runtimeExecutables: [join(f.source, 'source.txt')] })('current', f.live, {}),
+      /runtime executable overlaps source/);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 

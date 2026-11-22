@@ -2,11 +2,19 @@ import { lstatSync, opendirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export type TestDiscovery =
-  | { kind: 'candidate'; command: string; source: string }
+  | { kind: 'candidate'; command: string; source: string; script?: string; tool?: string }
   | { kind: 'none' }
   | { kind: 'unknown'; reason: string };
 
 const MAX_MANIFEST_BYTES = 64 * 1024;
+const MAX_SCRIPT_BYTES = 512;
+
+function knownTestTool(script: string): string | undefined {
+  if (/(?:^|[\s;&|])(?:vitest|[^\s]*\/vitest(?:\.mjs)?)(?:\s|$)/.test(script)) return 'Vitest';
+  if (/(?:^|[\s;&|])(?:jest|[^\s]*\/jest(?:\.js)?)(?:\s|$)/.test(script)) return 'Jest';
+  if (/(?:^|[\s;&|])node\s+--test(?:\s|$)/.test(script)) return 'Node test runner';
+  return undefined;
+}
 
 function regularFile(root: string, name: string): boolean | 'unknown' {
   try {
@@ -42,7 +50,10 @@ export function discoverProjectTestCommand(root: string): TestDiscovery {
     if (typeof test === 'string' && test.trim() && !/^echo\s+["']?error:\s+no test specified/i.test(test.trim())) {
       const manager = typeof pkg.packageManager === 'string' ? pkg.packageManager.split('@')[0] : 'npm';
       const command = ['npm', 'pnpm', 'yarn', 'bun'].includes(manager) ? `${manager} test` : 'npm test';
-      return { kind: 'candidate', command, source: 'package.json scripts.test' };
+      const script = test.trim();
+      return { kind: 'candidate', command, source: 'package.json scripts.test',
+        script: script.length <= MAX_SCRIPT_BYTES ? script : `${script.slice(0, MAX_SCRIPT_BYTES)}…`,
+        tool: knownTestTool(script) };
     }
   }
 

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Container } from '@earendil-works/pi-tui';
 import { createPiSitter } from '../src/index.ts';
 import { piSitterLimits } from '../src/config.ts';
 import { PiSitterEngine, classifyObservation } from '../src/core.ts';
@@ -15,7 +16,10 @@ const ready = { kind: 'ready', diagnosis, latencyMs: 12, inputTokens: 100, outpu
 function harness(mode = 'shadow', diagnose = async () => ready, branch = [], verify, extra = {}) {
   process.env.PI_SITTER_MODE = mode;
   const handlers = new Map(), commands = new Map(), entryRenderers = new Map(), messageRenderers = new Map(), entries = [...branch], statuses = [], widgets = [], notices = [], sent = [], working = [];
-  const pi = { on(name, fn) { const previous = handlers.get(name); handlers.set(name, previous ? async (...args) => { await previous(...args); return fn(...args); } : fn); }, registerCommand(name, value) { commands.set(name, value); },
+  const pi = { on(name, fn) { const previous = handlers.get(name); handlers.set(name, previous ? async (...args) => {
+    const earlier = await previous(...args);
+    return (await fn(...args)) ?? earlier;
+  } : fn); }, registerCommand(name, value) { commands.set(name, value); },
     registerEntryRenderer(name, renderer) { entryRenderers.set(name, renderer); },
     registerMessageRenderer(name, renderer) { messageRenderers.set(name, renderer); },
     getActiveTools: () => ['project_scripts_get_parse_errors'],
@@ -210,6 +214,25 @@ test('accepted intervention renders muted immediately and completes the same pur
   const terminal = h.entries.filter(entry => entry.customType === 'pi-sitter-intervention').at(-1);
   assert.equal(terminal.data.id, events[0].data.id);
   assert.equal(terminal.data.phase, 'completed');
+  assert.equal(terminal.data.workerPrompt, delivery.entries[0].content);
+  const clickable = renderer(events[0], { expanded: false }, theme);
+  const collapsed = clickable.render(80).join('\n');
+  assert.match(collapsed, /Click to show more/);
+  assert.doesNotMatch(collapsed, /Full prompt supplied to Worker/);
+  const hostContainer = new Container();
+  hostContainer.addChild(clickable);
+  hostContainer.render(80);
+  const hintY = collapsed.split('\n').findIndex(line => line.includes('Click to show more'));
+  const click = hostContainer.handleMouse({ type: 'click', button: 'left', x: 2, y: hintY,
+    screenX: 2, screenY: hintY, width: 80, height: collapsed.split('\n').length });
+  assert.equal(click?.handled, true);
+  const opened = clickable.render(80).join('\n');
+  assert.match(opened, /Full prompt supplied to Worker/);
+  assert.match(opened, /> \[Pi Sitter guidance — extension generated/);
+  assert.match(opened, /> Suggested next action: Fix the preload string/);
+  assert.match(opened, /Click to show less/);
+  assert.deepEqual(clickable.handleMouse({ type: 'click', button: 'left' }), { handled: true });
+  assert.doesNotMatch(clickable.render(80).join('\n'), /Full prompt supplied to Worker/);
   styles.length = 0;
   const complete = renderer(events[0], { expanded: true }, theme).render(80);
   assert.match(complete.join(''), /Preload path is invalid/);
@@ -239,6 +262,37 @@ test('failed and cancelled supervision end the pending card', async () => {
   await pending;
   assert.deepEqual(cancelled.entries.filter(entry => entry.customType === 'pi-sitter-intervention').map(entry => entry.data.phase),
     ['started', 'cancelled']);
+});
+
+test('rejected supervisor replies are quoted on demand and never labeled as Worker prompts', async () => {
+  let calls = 0;
+  const replies = ['{"issue":"First guess","evidence":"not in trigger"}',
+    '{"issue":"Second guess","evidence":"still not in trigger"}\u001b[2J'];
+  const h = harness('active', async () => ({ kind: 'failed', invalidOutput: true,
+    reason: 'evidence is not grounded in the trigger', rawResponse: replies[calls++], latencyMs: 1 }),
+    [], undefined, { limits: { ...piSitterLimits(), maxFallbackAdvisories: 0 } });
+  emitTool(h, 'rejected-a');
+  assert.equal(await boundary(h, emitTool(h, 'rejected-b')), undefined);
+  assert.equal(calls, 2);
+  const events = h.entries.filter(entry => entry.customType === 'pi-sitter-intervention');
+  assert.deepEqual(events.at(-1).data.rejectedResponses, replies);
+  assert.equal(events.at(-1).data.workerPrompt, undefined);
+  const renderer = h.entryRenderers.get('pi-sitter-intervention');
+  const theme = { appearance: 'dark', style: text => text };
+  const card = renderer(events[0], { expanded: false }, theme);
+  assert.match(card.render(120).join('\n'), /Click to show more/);
+  assert.doesNotMatch(card.render(120).join('\n'), /First guess/);
+  card.handleMouse({ type: 'click', button: 'left' });
+  const expanded = card.render(120).join('\n');
+  assert.match(expanded, /Rejected supervisor response 1 \(not sent to Worker\)/);
+  assert.match(expanded, /> \{"issue":"First guess"/);
+  assert.match(expanded, /Rejected supervisor response 2 \(not sent to Worker\)/);
+  assert.match(expanded, /\\u001b\[2J/);
+  assert.doesNotMatch(expanded, /\u001b/);
+  assert.doesNotMatch(expanded, /Full prompt supplied to Worker/);
+  const restored = harness('active', async () => { throw Error('unexpected inference'); }, h.entries);
+  const replayed = restored.entryRenderers.get('pi-sitter-intervention')(events[0], { expanded: true }, theme).render(120).join('\n');
+  assert.match(replayed, /> \{"issue":"Second guess"/);
 });
 
 test('ordinary Worker calls and passive monitoring create no intervention card', async () => {
@@ -511,6 +565,36 @@ test('startup announcement is muted, branch-deduplicated and no-tests mode does 
   assert.equal(h.sent.length, 0);
 });
 
+test('setup warning is visible at startup and host-only plan selection updates it without executing tests', async () => {
+  let selected;
+  const setup = { getSelectedPlanId: () => selected,
+    selectApprovedPlan(id) { if (id !== 'approved-v1') throw new Error('Unknown host plan'); selected = id; },
+    preflight: (_stage, _root, id) => ({ ready: id === 'approved-v1', reason: 'Select an approved plan' }) };
+  const h = harness('active', async () => ready, [], undefined, { verificationSetup: setup,
+    resolveApprovedVerifier: () => undefined });
+  const cards = () => h.entries.filter(entry => entry.customType === 'pi-sitter-readiness');
+  assert.equal(cards().length, 1);
+  assert.equal(cards()[0].data.status, 'NO_TESTS');
+  const renderer = h.entryRenderers.get('pi-sitter-readiness');
+  const theme = { appearance: 'dark', style: text => text };
+  assert.match(renderer({ data: cards()[0].data }, { expanded: false }, theme).render(100).join('\n'), /NO_TESTS/);
+  assert.ok(h.notices.some(([message, level]) => level === 'warning' && /No-tests mode/.test(message)));
+  await h.commands.get('sitter').handler('setup', h.ctx);
+  assert.ok(h.notices.some(([message]) => /host outside Worker write access/.test(message)));
+  await h.commands.get('sitter').handler('use npm test', h.ctx);
+  assert.equal(selected, undefined);
+  await h.commands.get('sitter').handler('use missing', h.ctx);
+  assert.equal(selected, undefined);
+  await h.commands.get('sitter').handler('use approved-v1', h.ctx);
+  assert.equal(selected, 'approved-v1');
+  assert.equal(cards().length, 2);
+  assert.equal(cards()[1].data.planId, 'approved-v1');
+  assert.match(renderer({ data: cards()[0].data }, { expanded: false }, theme).render(100).join('\n'), /HISTORICAL/);
+  h.handlers.get('session_start')({ type: 'session_start', reason: 'resume' }, h.ctx);
+  assert.equal(cards().length, 2);
+  assert.equal(h.entries.filter(entry => entry.customType === 'pi-sitter-verification-attempt').length, 0);
+});
+
 test('/sitter verify runs at an idle boundary and blocks before legacy verifier without controller authority', async () => {
   process.env.PI_SITTER_STAGE = '02';
   try {
@@ -534,7 +618,7 @@ test('/sitter verify runs at an idle boundary and blocks before legacy verifier 
     assert.deepEqual(h.entries.filter(entry => entry.customType === 'pi-sitter-verification').map(entry => entry.data), []);
     assert.equal(h.entries.find(entry => entry.customType === 'pi-sitter-completion')?.data.decision, 'BLOCKED');
     assert.ok(h.notices.length >= 1);
-    assert.match(h.notices[0][0], /after the Worker turn completes/);
+    assert.ok(h.notices.some(([message]) => /after the Worker turn completes/.test(message)));
   } finally { delete process.env.PI_SITTER_STAGE; }
 });
 

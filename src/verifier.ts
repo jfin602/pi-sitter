@@ -14,6 +14,8 @@ export interface ApprovedVerifier {
   sourcePath: string;
   suitePath: string;
   runtimePaths: string[];
+  /** Individual host-approved runtime binaries needed by the suite (for example, an engine). */
+  runtimeExecutables?: string[];
   environment?: Record<string, string>;
   timeoutMs?: number;
   taskId?: string;
@@ -64,6 +66,8 @@ function validatePlan(plan: ApprovedVerifier): void {
       !Array.isArray(plan.args) || plan.args.length > 32 || plan.args.some(x => typeof x !== 'string' || x.length > 2048 || x.includes('\0')) ||
       !Array.isArray(plan.runtimePaths) || plan.runtimePaths.length > 16 || plan.runtimePaths.some(x =>
         typeof x !== 'string' || !absolute(x) || !x.startsWith('/usr/lib')) ||
+      (plan.runtimeExecutables !== undefined && (!Array.isArray(plan.runtimeExecutables) ||
+        plan.runtimeExecutables.length > 4 || plan.runtimeExecutables.some(x => typeof x !== 'string' || !absolute(x)))) ||
       (plan.environment && (Object.keys(plan.environment).length > 32 || Object.entries(plan.environment).some(([k, v]) =>
         !/^[A-Z][A-Z0-9_]{0,63}$/.test(k) || /^(PI_SITTER_|HOME$|TMPDIR$|PATH$|LD_|NODE_OPTIONS$)/.test(k) ||
         typeof v !== 'string' || v.length > 2048 || v.includes('\0')))))
@@ -121,6 +125,15 @@ export function approvedVerifier(plan: ApprovedVerifier) {
       if (executable.startsWith(source + sep) || executable.startsWith(suite + sep) ||
           source === resolve(_projectRoot))
         throw new Error('Verifier execution blocked: executable or source is inside the live project');
+      const extraExecutables = await Promise.all((plan.runtimeExecutables ?? []).map(async path => {
+        const checked = await checkedPath(path, false);
+        if (checked.startsWith(source + sep) || checked.startsWith(suite + sep) ||
+            checked.startsWith(resolve(_projectRoot) + sep))
+          throw new Error('Verifier execution blocked: runtime executable overlaps source, suite, or live project');
+        const stat = await lstat(checked);
+        if (!(stat.mode & 0o111)) throw new Error('Verifier execution blocked: runtime executable is not executable');
+        return checked;
+      }));
       await Promise.all([checkedTree(source, check), checkedTree(suite, check)]);
       privateRoot = await mkdtemp(join(tmpdir(), `pi-sitter-view-${process.pid}-`));
       const sourceView = join(privateRoot, 'source');
@@ -139,7 +152,7 @@ export function approvedVerifier(plan: ApprovedVerifier) {
         '--ro-bind', sourceView, '/source', '--ro-bind', suiteView, '/suite',
         '--proc', '/proc', '--dev', '/dev',
         '--symlink', 'usr/lib', '/lib', '--symlink', 'usr/lib64', '/lib64'];
-      for (const path of [...new Set([executable, node, launcher, '/usr/bin/prlimit', ...runtime])]) {
+      for (const path of [...new Set([executable, node, launcher, '/usr/bin/prlimit', ...runtime, ...extraExecutables])]) {
         const parts = path.slice(1).split('/');
         let dir = '';
         for (const part of parts.slice(0, -1)) { dir += '/' + part; sandbox.push('--dir', dir); }
@@ -149,8 +162,10 @@ export function approvedVerifier(plan: ApprovedVerifier) {
         '--setenv', 'PI_SITTER_STAGE', stage, '--setenv', 'PI_SITTER_PROJECT_ROOT', '/source',
         '--setenv', 'PI_SITTER_SUITE_ROOT', '/suite');
       for (const [key, value] of Object.entries(plan.environment ?? {})) sandbox.push('--setenv', key, value);
+      // RLIMIT_NPROC counts all threads for the host UID; 64 blocks Godot on busy hosts.
+      // Keep a finite cap while CPU, memory, time, and concurrent-run limits bound the child.
       sandbox.push('--chdir', '/source', '--', '/usr/bin/prlimit', '--cpu=30', '--as=4294967296',
-        '--fsize=16777216', '--nofile=128', '--nproc=64', '--core=0', '--', node, launcher, executable, ...plan.args);
+        '--fsize=16777216', '--nofile=128', '--nproc=4096', '--core=0', '--', node, launcher, executable, ...plan.args);
       check();
       const result = await new Promise<{ stdout: string; code: number }>((done, fail) => {
         const child = spawn('bwrap', sandbox, { env: { PATH: '/usr/bin:/bin' }, stdio: ['ignore', 'pipe', 'pipe'], detached: true });

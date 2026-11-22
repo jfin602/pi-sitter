@@ -19,6 +19,9 @@ export type InferenceOutcome = {
   outputTokens?: number;
   latencyMs: number;
   invalidOutput?: boolean;
+  /** Bounded model text retained for explaining a rejected diagnosis to the user. */
+  rawResponse?: string;
+  rejectedResponses?: string[];
   validation?: { field: string; actual: number; max: number };
 };
 
@@ -118,7 +121,8 @@ export async function runInference(
     const finalText = finalMessage.content?.filter(part => part.type === 'text').map(part => part.text ?? '').join('') ?? '';
     const parsed = parseDiagnosis(finalText || visible, input.trigger);
     return outcome(parsed.kind, { diagnosis: parsed.diagnosis, reason: parsed.reason,
-      invalidOutput: parsed.kind === 'failed', validation: parsed.validation,
+      invalidOutput: parsed.kind === 'failed', rawResponse: parsed.kind === 'failed' ? (finalText || visible).slice(0, 3000) : undefined,
+      validation: parsed.validation,
       inputTokens: finalMessage.usage?.input, outputTokens: finalMessage.usage?.output });
   } catch (error) {
     return outcome(timedOut ? 'timeout' : signal.aborted ? 'canceled' : 'failed', { reason: error instanceof Error ? error.message.slice(0, 160) : 'inference failed' });

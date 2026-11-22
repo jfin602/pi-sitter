@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PiSitterEngine } from '../src/core.ts';
-import { parseDiagnosis } from '../src/inference.ts';
+import { parseDiagnosis, runInference } from '../src/inference.ts';
 import { buildPrompt } from '../src/prompt.ts';
 import { genericFallback } from '../src/fallback.ts';
+import { piSitterLimits } from '../src/config.ts';
 
 // Sanitized Stage 02 shape: npm/Vite warnings precede the useful Vitest failure.
 const output = `
@@ -75,4 +76,19 @@ test('later tool error remains quotable after a long warning preamble', () => {
   assert.equal(parseDiagnosis(JSON.stringify({ issue: 'Saved source parse failed',
     evidence: 'Error: unable to parse saved source at line 14',
     next_action: 'Inspect the source near line 14', confidence: 0.8, abstain: false }), trigger).kind, 'ready');
+});
+
+test('invalid model diagnosis retains its exact bounded reply for the user', async () => {
+  const trigger = { type: 'T1', tool: 'bash', evidence: '2 equivalent failures: original test output', key: 'T1:bash:test' };
+  const reply = JSON.stringify({ issue: 'Inspect a different path', evidence: 'text absent from trigger',
+    next_action: 'Read the source file', confidence: 0.8, abstain: false });
+  const model = { id: 'fixture', provider: 'fixture' };
+  const ctx = { model, modelRegistry: { async *streamSimple() {
+    yield { type: 'done', message: { stopReason: 'stop', content: [{ type: 'text', text: reply }] } };
+  } } };
+  const result = await runInference(ctx, { task: 'Repair source', stage: '02', trigger,
+    recent: [], workerTools: [] }, piSitterLimits(), new AbortController().signal, () => {});
+  assert.equal(result.kind, 'failed');
+  assert.equal(result.reason, 'evidence is not grounded in the trigger');
+  assert.equal(result.rawResponse, reply);
 });

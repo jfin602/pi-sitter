@@ -71,7 +71,7 @@ function harness({ mode = 'active', reports = [], branch = [], analyze, shouldAn
   handlers.get('session_start')({}, ctx);
   const settle = (outcome = 'completed') => handlers.get('agent_before_settle')({ outcome, entries: [], continue: false }, ctx);
   const workerFinish = () => handlers.get('turn_end')({ outcome: 'completed', entries: [], toolResults: [],
-    message: { role: 'assistant', content: [], stopReason: 'stop' } }, ctx);
+    message: { role: 'assistant', content: [{ type: 'text', text: 'Repair attempt finished.' }], stopReason: 'stop' } }, ctx);
   return { pi, ctx, handlers, commands, entryRenderers, entries, notices, sent, working, settle, workerFinish };
 }
 

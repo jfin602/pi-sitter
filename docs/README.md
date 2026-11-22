@@ -21,6 +21,7 @@
 
 ## Development workflow and qualification
 
+- [Verification readiness](tasks/verification-readiness/README.md) — early setup warning, host-only approved plan selection and benchmark preflight gap.
 - [Workflow](workflow.md), [Dope runner](runner.md), [stability contract](stability-contract.md).
 - [Owner-approved ADR](decisions/0001-ten-approved-decisions.md), [ADR index](decisions/README.md).
 - [Task index](tasks/README.md), [P1 plan](tasks/p1/README.md), [P1 qualification ledger](tasks/p1/qualification/README.md).

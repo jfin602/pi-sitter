@@ -11,9 +11,15 @@ test('read-only discovery identifies project test candidates without granting ex
     assert.deepEqual(discoverProjectTestCommand(root), { kind: 'none' });
     await writeFile(join(root, 'package.json'), JSON.stringify({ scripts: { test: 'vitest run' } }));
     assert.deepEqual(discoverProjectTestCommand(root),
-      { kind: 'candidate', command: 'npm test', source: 'package.json scripts.test' });
+      { kind: 'candidate', command: 'npm test', source: 'package.json scripts.test', script: 'vitest run', tool: 'Vitest' });
     await writeFile(join(root, 'package.json'), JSON.stringify({ packageManager: 'pnpm@9.0.0', scripts: { test: 'vitest run' } }));
     assert.deepEqual(discoverProjectTestCommand(root).command, 'pnpm test');
+    await writeFile(join(root, 'package.json'), JSON.stringify({ scripts: { test: 'node --test' } }));
+    assert.equal(discoverProjectTestCommand(root).tool, 'Node test runner');
+    await writeFile(join(root, 'package.json'), JSON.stringify({ scripts: { test: 'custom-test-runner' } }));
+    assert.equal(discoverProjectTestCommand(root).tool, undefined);
+    await writeFile(join(root, 'package.json'), JSON.stringify({ scripts: { test: 'x'.repeat(1024) } }));
+    assert.ok(discoverProjectTestCommand(root).script.length <= 513);
     await writeFile(join(root, 'package.json'), JSON.stringify({ scripts: { test: 'echo "Error: no test specified" && exit 1' } }));
     assert.deepEqual(discoverProjectTestCommand(root), { kind: 'none' });
     await writeFile(join(root, 'package.json'), '{');
