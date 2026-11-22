@@ -16,7 +16,11 @@ Trigger: an existing configured non-test event or verified failed gate. Evidence
 
 Pi Sitter issues the plan, returns dormant and leaves all implementation to the worker. The worker repairs; the trusted test runner reevaluates. Do not keep a continuously active second agent session during repairs.
 
-Current `src/completion.ts` offers a recovery plan and `src/analysis.ts` may add inspected evidence; this does not prove all required structured fields or quality gates pass yet. Qualification needs realistic unrelated failures, high-specificity repairs and abstention when evidence is inadequate.
+The source path now carries the structured diagnostic below. Automated fixtures exercise evidence linkage and abstention; native model quality and formal outcome remain separate qualification gates.
+
+## P7 implemented diagnostic shape (0.1.7 automated checkpoint)
+
+`RecoveryPlan.diagnosis` carries one `RecoveryDiagnosis`: `trigger`, `status`, `task`, `milestone`, protected `suite`, `source` snapshot, `run`, failed gate and test IDs, observed failed assertions with locations, causal evidence references, probable cause, confidence and uncertainty, affected source locations, ordered Worker actions, a `post_repair` gate/test rerun request, gaps, and optional protected-suite-owner escalation. A failed test establishes a symptom; without a supported cause the status stays `UNVERIFIED` and the Worker receives bounded read-only inspection guidance. Successful approved inspection citations must carry a receipt for the same task, run and source snapshot. Passing test text, error text and stale receipts do not support a cause. The trusted runner resolves the rerun request; the supervisor has no command or write authority. This checkpoint is automated evidence only and does not qualify native model behavior or formal release.
 
 ## Audit-driven causal proof
 

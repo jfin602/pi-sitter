@@ -225,7 +225,7 @@ test('unchanged saved snapshot gets one focused retry of the same repair attempt
   assert.equal(retryRecord.attempt, 1);
   assert.equal(retryRecord.retry, 1);
   assert.match(retry.entries.find(e => e.type === 'custom_message').content, /previous repair turn ended without a saved project change/);
-  assert.match(retry.entries.find(e => e.type === 'custom_message').content, /Perform the concrete edit listed below/);
+  assert.match(retry.entries.find(e => e.type === 'custom_message').content, /cause remains UNVERIFIED/);
   await h.workerFinish();
   const second = await h.settle();
   assert.equal(second.entries.find(e => e.customType === 'pi-sitter-recovery').data.attempt, 2);
@@ -279,7 +279,7 @@ test('each manual recover resets the attempt and verification limits, including 
   await h.commands.get('sitter').handler('status', h.ctx);
   assert.match(h.notices.at(-1)[0], /verification 0 ms \(0\/5\); recovery 1\/2/);
   assert.equal(h.sent.length, 1);
-  assert.match(h.sent[0].message.content, /Required action:/);
+  assert.match(h.sent[0].message.content, /Next safe inspection:/);
   const recovery = h.entries.filter(e => e.customType === 'pi-sitter-recovery').at(-1).data;
   assert.equal(recovery.attempt, 1);
   assert.equal(recovery.retry, undefined);

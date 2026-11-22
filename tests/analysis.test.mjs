@@ -21,7 +21,7 @@ test('analysis requests bounded broker inspection tied to the same snapshot', as
   } };
   const answer = async () => ({ text: ++calls === 1
     ? JSON.stringify({ requests: [{ capability: 'read_source', path: 'main.ts' }] })
-    : JSON.stringify({ action: 'Correct the branch condition in the saved source', evidence: 'wrong branch selected' }), inputTokens: 20, outputTokens: 10 });
+    : JSON.stringify({ action: 'Correct the branch condition in the saved source', evidenceRefs: [{ kind: 'inspection', index: 0, quote: 'wrong branch selected' }] }), inputTokens: 20, outputTokens: 10 });
   const result = await runInspectionAnalysis(report, broker, answer, undefined,
     { onInspections: (requests, results) => { observed = [requests, results]; } });
   assert.equal(result.kind, 'ready');

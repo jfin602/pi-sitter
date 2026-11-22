@@ -8,7 +8,7 @@ import { PiSitterView } from './view.ts';
 import { normalizeGateReport, type GateReport, type GateSet } from './gates.ts';
 import { adaptVitestReport } from './vitest-report.ts';
 import { validateControllerContext, type ControllerContext } from './controller-context.ts';
-import { createRecoveryPlan, decideCompletion, noProgressRecoveryPrompt, type CompletionRecord, type RecoveryPlan } from './completion.ts';
+import { applyRecoveryAnalysis, createRecoveryPlan, decideCompletion, noProgressRecoveryPrompt, type CompletionRecord, type RecoveryPlan } from './completion.ts';
 import { EvidenceBroker } from './broker.ts';
 import { openSupervisorSession } from './supervisor-session.ts';
 import type { McpReadHost } from './mcp-read.ts';
@@ -1102,8 +1102,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
             completionDiagnosisCalls += Math.min(1, result.calls);
             recoveryGenerationCalls += Math.max(0, result.calls - 1);
             pi.appendEntry(ANALYSIS_TYPE, result);
-            if (result.kind === 'ready' && recoveryPlan && result.action && result.evidence)
-              recoveryPlan = { ...recoveryPlan, text: `${recoveryPlan.text}\n\nAdditional inspected guidance: ${result.action}\nSupporting evidence: ${result.evidence}` };
+            if (recoveryPlan) recoveryPlan = applyRecoveryAnalysis(recoveryPlan, report, result);
           }
         } catch (error) {
           if (!current.signal.aborted) {
