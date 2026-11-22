@@ -47,6 +47,8 @@ jobs:
           test ! -d .codex-runs
       - name: Install dependencies without root lockfile
         run: npm install --ignore-scripts --no-package-lock
+      - name: Validate authored P1 prompt grammar (parse only)
+        run: npm run codex:phase:validate -- p1
       - name: Run original runner regressions and Pi Sitter compatibility tests
         run: npm run test:runner
       - name: Typecheck Pi Sitter extension
