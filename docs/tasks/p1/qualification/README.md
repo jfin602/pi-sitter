@@ -41,3 +41,7 @@ P1–P3 were committed by the Dope runner through `1ae5075`. [P4 automated evide
 ## P2 execution checkpoint
 
 [P2 task/manifest evidence](P2-2026-11-21-not-green.md) preserves the initial aggregate sandbox failures and appends the successful recovery checks. The working-tree package version is `0.1.2`; the checkpoint is ready for the Dope runner to commit. Native Pi/MCP, P3+ implementation and 1.0 release qualification remain open.
+
+## P9 headless checkpoint
+
+[P9 headless evidence and P10 handoff](p9-headless.md) records the two unrelated tarball installs, deterministic controller flows, negative cases and remaining native/manual gaps. Earlier checkpoint entries above are historical, not a claim that current work is still at P2. P10 remains owner initiated and browser gated.

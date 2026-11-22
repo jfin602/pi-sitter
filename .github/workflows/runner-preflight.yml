@@ -11,6 +11,7 @@ on:
       - 'tests/runner/**'
       - 'src/**'
       - 'tests/*.test.mjs'
+      - 'tests/fixtures/headless/**'
       - 'docs/tasks/p1/**'
   pull_request:
     paths:
@@ -22,6 +23,7 @@ on:
       - 'tests/runner/**'
       - 'src/**'
       - 'tests/*.test.mjs'
+      - 'tests/fixtures/headless/**'
       - 'docs/tasks/p1/**'
 
 permissions:

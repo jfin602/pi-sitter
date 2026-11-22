@@ -2,6 +2,8 @@
 
 ## Current project truth and navigation
 
+**P9 checkpoint (2026-11-21):** [headless qualification and P10 manual handoff](tasks/p1/qualification/p9-headless.md) cover packed installs and deterministic TypeScript/Python fixtures. Live model/MCP and owner closeout remain open; the older status notes below are historical.
+
 - [Agent router](../AGENTS.md) — engineering invariants and bounded context.
 - [Boot/current status](../BOOT.md) — source-backed implementation vs future design.
 - [Module map](../MODULES.md) — owners and trust boundaries.

@@ -1,0 +1,16 @@
+{
+  "taskId": "slug-python",
+  "task": "Normalize spaces in a title slug. Preserve lowercase output.",
+  "requirements": [
+    { "id": "spaces", "text": "Normalize spaces in a title slug." },
+    { "id": "lowercase", "text": "Preserve lowercase output." }
+  ],
+  "source": "slug.py",
+  "before": "def slug(title):\n    return title.lower()\n",
+  "after": "def slug(title):\n    return title.lower().replace(' ', '-')\n",
+  "assertion": "title slug expected hello-world, got hello world",
+  "brokenQuote": "return title.lower()",
+  "repairedQuote": "return title.lower().replace(' ', '-')",
+  "gate": "SPACES",
+  "test": "slug spaces normalized"
+}

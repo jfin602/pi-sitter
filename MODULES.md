@@ -13,7 +13,7 @@
 | `src/verifier.ts` | Host-approved external verification execution | Isolation needs further qualification |
 | `src/completion.ts` | Completion and recovery summaries | Advisory; formal decision owned by controller |
 | `src/view.ts` | Status/panel formatting | Display observed state truthfully |
-| `tests/` | Pi Sitter's own regression and qualification fixtures | Independent of `llm-zone` |
+| `tests/`, `tests/fixtures/headless/` | Pi Sitter's own regression, packed-install and deterministic TypeScript/Python qualification fixtures | Independent of `llm-zone`; simulated reporter/model steps do not qualify native Pi/MCP |
 | `scripts/codex-phase-*.mjs`, `scripts/validate-codex-phase.mjs` | Exact Dope developer prompt runner | **Not** included in Pi runtime package |
 | `tests/runner/` | Developer runner regression and compatibility tests | Disposable Git/test fixtures |
 | `docs/tasks/` | Bounded scoped plans and immutable executed prompt evidence | Prompts require explicit execution approval |

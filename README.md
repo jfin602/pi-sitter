@@ -26,19 +26,19 @@ The default task label is `current`. Set `PI_SITTER_STAGE` only if your integrat
 
 ## Completion verification
 
-An external, **host-approved** verification runner is optional. Set `PI_SITTER_VERIFY_COMMAND` in the trusted launch environment to a JSON array whose first element is an absolute executable path, for example:
+An external, **host-approved** verification runner is optional. Set `PI_SITTER_VERIFY_COMMAND` in the trusted launch environment to a JSON string plan ID. The embedding host must resolve that ID to an approved executable, arguments, protected suite, source snapshot, and allowed runtime mounts:
 
 ```bash
-export PI_SITTER_VERIFY_COMMAND='["/usr/bin/node","/opt/approved-verifiers/check-project.mjs"]'
+export PI_SITTER_VERIFY_COMMAND='"approved-project-check"'
 ```
 
-The runner receives `PI_SITTER_STAGE` and `PI_SITTER_PROJECT_ROOT` and emits one JSON `GateReport` on stdout. It runs via `execFile` without a shell, inside Linux `bubblewrap` with the filesystem mounted read-only and network access disabled. `bubblewrap` must be installed for this runner. It may use a private temporary directory. A project file or model response cannot configure the command. A missing runner blocks completion verification; it does not create a passing result. See [verification protocol](docs/verification.md) for the report shape.
+The runner emits one structured report on stdout and runs without a shell inside Linux `bubblewrap` against private read-only source and protected-suite copies. Network access is disabled and scratch is disposable. A project file or model response cannot configure the plan. Missing resolver, unsupported sandbox or malformed report blocks verification. See the [verification runner contract](docs/contracts/verification-runner.md) and [gate report contract](docs/contracts/gate-report.md).
 
-Trusted extension authors can instead call `createPiSitter({ verify, loadGates, evidenceBroker, ... })` and supply a verifier and evidence provider directly. This preserves the independent supervisor session and broker integration points from the source project. Verification interfaces are generic; Vitest, Godot, and any other project-specific checks belong in an external runner or adapter.
+Trusted embedding hosts can call `createPiSitter({ verify, loadControllerContext, evidenceBroker, reviewRequirements, ... })` to supply controller-owned task/suite identity, a verifier and an independent requirement reviewer. Passing protected tests alone stays UNVERIFIED until every authored requirement has current source evidence. The host enforces source/suite integrity and isolation; Pi Sitter's advisory decision is not formal task scoring.
 
 ## Read-only boundary
 
-The supervisor's separate Pi session starts with no built-in tools. It exposes snapshot inspection through an adapter-supplied broker and blocks every other tool call. Direct MCP supervisor tools are disabled until a project adapter is independently qualified. The host-approved verification command runs against a read-only project mount and cannot use network access. The broker rejects path traversal and symlinks, caps input and output, and copies approved project evidence into a disposable snapshot.
+The supervisor's separate Pi session starts with no built-in tools. It exposes snapshot inspection through an adapter-supplied broker. A trusted embedding host may also expose specifically vetted MCP read operations through a host dispatcher; ordinary standalone installs have no such adapter. Server-authored `readOnlyHint` is not sufficient permission. The broker rejects path traversal and symlinks, caps input and output, and copies approved project evidence into a disposable snapshot.
 
 These boundaries protect against tool-level writes by the supervisor. A trusted adapter's own implementation and a trusted verifier's reported facts still require review. Pi Sitter does not prevent the worker from editing its own project. The extension itself runs with Pi's normal process permissions, as all Pi extensions do.
 
@@ -51,11 +51,11 @@ npm test
 npm pack --dry-run
 ```
 
-Tests use deterministic worker events, a non-Godot project, a real Pi package loader, and a sandboxed verifier. The package contains TypeScript source under `src/`, so the manifest and exports work from npm or Git installs.
+Tests use deterministic worker events, TypeScript and Python fixtures, tarball installs into unrelated temporary projects, the Pi package loader, and a sandboxed verifier. The package contains TypeScript source under `src/`. Headless reporter/model responses are simulated; native Pi/MCP qualification and owner review remain manual. See the [P9 evidence and P10 handoff](docs/tasks/p1/qualification/p9-headless.md).
 
 ## Architecture and developer workflow
 
-The [documentation index](docs/README.md), [current implementation status](BOOT.md) and [owner-approved ADR](docs/decisions/0001-ten-approved-decisions.md) distinguish working 0.1.0 behavior from proposed 1.0 contracts. The existing triggers are intentionally preserved. Structured Vitest suite provenance, full worker MCP tool parity, and expanded requirement review are **not yet qualified**.
+The [documentation index](docs/README.md), [current implementation status](BOOT.md) and [owner-approved ADR](docs/decisions/0001-ten-approved-decisions.md) distinguish automated source behavior from unqualified 1.0 release requirements. The existing triggers are intentionally preserved. Structured Vitest provenance and requirement review have automated coverage; general worker MCP parity and live model behavior remain unqualified.
 
 The [Dope Codex phase runner](docs/runner.md) is a **developer-only** workflow. It is different from Pi Sitter's runtime approved test runner and is not published as part of the Pi extension. The root uses `.npmrc` to disable lockfiles because the original Dope runner rejects `package-lock.json`. Use Node 24 for runner tests. To check the runner:
 
@@ -63,4 +63,4 @@ The [Dope Codex phase runner](docs/runner.md) is a **developer-only** workflow. 
 npm run test:runner
 ```
 
-P1 implementation prompt files are not yet authored; do not run the phase runner or treat this documentation application as authorization to publish 1.0.
+The phase runner owns implementation commits and version checkpoints. P10 remains a browser-gated manual closeout; no headless result authorizes a 1.0 tag or publication.

@@ -1,0 +1,16 @@
+{
+  "taskId": "invoice-ts",
+  "task": "Calculate the discounted invoice total. Preserve the invoice currency label.",
+  "requirements": [
+    { "id": "total", "text": "Calculate the discounted invoice total." },
+    { "id": "label", "text": "Preserve the invoice currency label." }
+  ],
+  "source": "invoice.ts",
+  "before": "export const total = (price: number, discount: number) => price;\nexport const currency = 'USD';\n",
+  "after": "export const total = (price: number, discount: number) => price - discount;\nexport const currency = 'USD';\n",
+  "assertion": "discounted invoice total expected 90, got 100",
+  "brokenQuote": "=> price;",
+  "repairedQuote": "=> price - discount;",
+  "gate": "TOTAL",
+  "test": "invoice discounted total"
+}
