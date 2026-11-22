@@ -28,7 +28,7 @@ test('milestone selects approved subset; final covers the complete manifest', ()
 
 test('post-repair requires a new source and includes failed gates', () => {
   const previous = { schemaVersion: 2, taskId: 'task', snapshotIdentity: SHA_A,
-    suite: { digest: DIGEST }, gates: [{ id: 'A', result: 'FAIL' }, { id: 'B', result: 'PASS' }] };
+    suite: { id: 'suite', version: 'v1', digest: DIGEST }, gates: [{ id: 'A', result: 'FAIL' }, { id: 'B', result: 'PASS' }] };
   assert.throws(() => selectCheckpoint(controller(SHA_A), { reason: 'post_repair',
     milestoneId: 'M1', gateIds: ['A'], regressionGateIds: ['B'] }, previous), /fresh source/);
   assert.throws(() => selectCheckpoint(controller(SHA_B), { reason: 'post_repair',

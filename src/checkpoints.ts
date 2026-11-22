@@ -39,6 +39,7 @@ export function selectCheckpoint(context: ControllerContext, request: Checkpoint
   if (request.reason === 'post_repair') {
     if (!previous || previous.schemaVersion !== 2 || previous.taskId !== context.taskId ||
         previous.snapshotIdentity === context.sourceSnapshot || previous.suite.digest !== context.suite.digest ||
+        previous.suite.id !== context.suite.id || previous.suite.version !== context.suite.version ||
         !previous.gates.some(gate => gate.result === 'FAIL'))
       throw new Error('Post-repair verification requires a fresh source and prior failed gates');
     const affected = previous.gates.filter(gate => gate.result === 'FAIL').map(gate => gate.id);

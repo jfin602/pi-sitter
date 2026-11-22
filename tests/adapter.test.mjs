@@ -43,7 +43,7 @@ test('completion uses stacked rows with theme-aware colors and emphasized status
     assert.equal(lines.length, 7);
     assert.ok(lines.every(line => line.length === 80));
     assert.deepEqual(lines.map(line => line.trim()), ['', 'Pi Sitter', 'Stage 01', 'HISTORICAL', '',
-      'Historical success claim; current requirement review unavailable', '']);
+      'Historical completion; current attempt requires fresh validated evidence', '']);
     assert.equal(styles[1].text.trim(), 'Pi Sitter');
     assert.equal(styles[1].bold, true);
     assert.deepEqual(styles[1].fg, appearance === 'dark' ? { kind: 'rgb', r: 200, g: 185, b: 217 } : 'accent');
@@ -77,18 +77,18 @@ test('a recover command has its own gray request card before the queued result',
   assert.ok(styles.every(style => style.bg.r === 55 && style.bg.g === 55 && style.bg.b === 55));
 });
 
-test('recoverable and terminal completion states use distinct backgrounds', () => {
+test('unbound completion cards are explicitly historical', () => {
   const h = harness();
   const render = h.entryRenderers.get('pi-sitter-completion');
   const base = { stage: '05', counts: { PASS: 3, FAIL: 2, UNVERIFIED: 0 },
     failedGateIds: ['REQ-ITEM-AREA-CONNECTION', 'REQ-COLLISION-PHYSICAL'], unverifiedGateIds: [],
     reason: 'Two required gates failed' };
   const cases = [
-    [{ ...base, decision: 'RECOVERY_REQUIRED', attempt: 0 }, 'RECOVERY_REQUIRED', [107, 63, 29]],
-    [{ ...base, decision: 'RECOVERY_REQUIRED', attempt: 2 }, 'FAILED', [106, 31, 31]],
-    [{ ...base, decision: 'BLOCKED', attempt: 0 }, 'BLOCKED', [106, 31, 31]],
+    [{ ...base, decision: 'RECOVERY_REQUIRED', attempt: 0 }, 'HISTORICAL', [107, 63, 29]],
+    [{ ...base, decision: 'RECOVERY_REQUIRED', attempt: 2 }, 'HISTORICAL', [106, 31, 31]],
+    [{ ...base, decision: 'BLOCKED', attempt: 0 }, 'HISTORICAL', [106, 31, 31]],
     [{ ...base, decision: 'UNVERIFIED', counts: { PASS: 3, FAIL: 0, UNVERIFIED: 1 },
-      unverifiedGateIds: ['REQ-VISUAL-CHECK'], attempt: 0 }, 'UNVERIFIED', [106, 31, 31]],
+      unverifiedGateIds: ['REQ-VISUAL-CHECK'], attempt: 0 }, 'HISTORICAL', [106, 31, 31]],
   ];
   for (const [data, status, rgb] of cases) {
     const styles = [];
@@ -118,15 +118,15 @@ test('verification and recovery cards keep stage and state on separate rows', ()
     regressions: [], gates: [{ id: 'REQ-COLLISION-PHYSICAL', result: 'FAIL', evidence: 'Collision missing' }] };
   const verification = h.entryRenderers.get('pi-sitter-verification')({ data: report }, { expanded: true }, theme).render(80);
   assert.deepEqual(verification.slice(1, 6).map(line => line.trim()),
-    ['Pi Sitter', 'Stage 05', 'RECOVERY_REQUIRED', '', '1 failed: REQ-COLLISION-PHYSICAL']);
-  assert.ok(styles.every(style => style.bg.r === 107 && style.bg.g === 63 && style.bg.b === 29));
+    ['Pi Sitter', 'Stage 05', 'HISTORICAL', '', 'Historical report; current attempt requires fresh validated evidence']);
+  assert.ok(styles.every(style => style.bg.r === 106 && style.bg.g === 31 && style.bg.b === 31));
   styles.length = 0;
   const plan = { stage: '05', focusGateIds: ['REQ-COLLISION-PHYSICAL'], text: 'Pi Sitter Recovery — Stage 05\nCheck collision' };
   const recovery = h.entryRenderers.get('pi-sitter-recovery')({ data: { attempt: 1, plan, delivery: 'queued_manual' } },
     { expanded: true }, theme).render(80);
   assert.deepEqual(recovery.slice(1, 6).map(line => line.trim()),
-    ['Pi Sitter', 'Stage 05', 'RECOVERY_QUEUED', '', 'Attempt 1 of 2 for REQ-COLLISION-PHYSICAL']);
-  assert.ok(styles.every(style => style.bg.r === 107 && style.bg.g === 63 && style.bg.b === 29));
+    ['Pi Sitter', 'Stage 05', 'HISTORICAL', '', 'Historical recovery; no current repair is authorized by this entry']);
+  assert.ok(styles.every(style => style.bg.r === 106 && style.bg.g === 31 && style.bg.b === 31));
   assert.ok(!recovery.some(line => line.includes(' | ') || line.includes(' · ')));
   const message = h.messageRenderers.get('pi-sitter-recovery-message')({ content: plan.text }, {}, theme).render(80);
   assert.deepEqual(message.slice(1, 4).map(line => line.trim()), ['Pi Sitter', 'Stage 05', 'RECOVERY_GUIDANCE']);
@@ -145,7 +145,7 @@ test('completion text wraps within the available terminal width', () => {
   const lines = render(entry, { expanded: false }, theme).render(24);
   assert.ok(lines.length > 3);
   assert.ok(lines.every(line => Array.from(line).length === 24));
-  assert.match(lines.join(''), /incomplete/);
+  assert.match(lines.join(''), /Historical completion/);
 });
 
 function emitTool(h, id, text = '{"ok":false,"errors":[{"message":"Invalid preload at line 3"}]}') {

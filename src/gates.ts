@@ -136,6 +136,8 @@ export function normalizeGateReport(input: unknown, context: ControllerContext, 
   if ((execution.exitCode === 0 && actual.failed > 0) || (execution.exitCode !== 0 && actual.failed === 0))
     return bad('exit status does not match assertion results');
   const prior = new Map(previous?.schemaVersion === 2 && previous.taskId === context.taskId &&
+    previous.stage === context.stage && previous.suite.id === context.suite.id &&
+    previous.suite.version === context.suite.version &&
     previous.suite.digest === context.suite.digest ? previous.gates.map(gate => [gate.id, gate.result]) : []);
   const regressions = gates.filter(gate => prior.get(gate.id) === 'PASS' && gate.result === 'FAIL').map(gate => gate.id);
   return { schemaVersion: 2, taskId: context.taskId, runId: report.runId, stage: context.stage, snapshotIdentity: context.sourceSnapshot,

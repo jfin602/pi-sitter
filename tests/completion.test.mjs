@@ -30,12 +30,15 @@ function harness({ mode = 'active', reports = [], branch = [], analyze, shouldAn
   const handlers = new Map(), commands = new Map(), entryRenderers = new Map(), entries = [...branch], notices = [], sent = [], working = [];
   let index = 0;
   let currentReport;
+  let justRan = false;
   const known = [...reports.filter(value => value && typeof value === 'object' && !('then' in value)),
     ...branch.filter(entry => entry.customType === 'pi-sitter-verification').map(entry => entry.data)];
   const gateCatalog = new Map(known.flatMap(value => value.gates ?? []).map(gate => [gate.id, gate.requirement]));
   if (gateCatalog.size === 0) gateCatalog.set('A', 'Requirement for A');
   const controller = () => {
-    const selected = currentReport ?? known[0];
+    const candidate = reports[Math.min(index, reports.length - 1)];
+    const selected = justRan ? currentReport : candidate && typeof candidate === 'object' && 'snapshotIdentity' in candidate ? candidate : currentReport ?? known[0];
+    justRan = false;
     const requirements = [...gateCatalog].map(([id, text]) => ({ id, text }));
     return { schemaVersion: 1, taskId: 'task-04', stage: '04',
       originalTask: { text: requirements.map(row => row.text).join('\n'), reference: 'test-controller:04', version: 'v1', requirements },
@@ -60,6 +63,7 @@ function harness({ mode = 'active', reports = [], branch = [], analyze, shouldAn
     const value = await reports[Math.min(index++, reports.length - 1)];
     if (value instanceof Error) throw value;
     currentReport = value;
+    justRan = true;
     return { schemaVersion: 2, taskId: value.taskId, runId: randomUUID(), stage: value.stage,
       snapshotIdentity: value.snapshotIdentity, suite: value.suite, testCounts: value.testCounts, execution: value.execution,
       gates: value.gates.map(gate => ({ id: gate.id, tests: gate.tests })) };
@@ -126,7 +130,7 @@ test('manual verify shows its pending card before returning the final result', a
   const theme = { appearance: 'dark', style(text) { return text; } };
   const render = h.entryRenderers.get('pi-sitter-verification-pending');
   assert.equal(render(pending, { expanded: false }, theme).render(80)[3].trim(), 'VERIFYING');
-  release(report('04', 'v'.repeat(64), [['A', 'PASS']]));
+  release(report('04', 'a'.repeat(64), [['A', 'PASS']]));
   await command;
   assert.equal(render(pending, { expanded: false }, theme).render(80)[3].trim(), 'UNVERIFIED');
   assert.deepEqual(h.working.slice(-3), [['message', undefined], ['visible', false], ['visible', true]]);
@@ -254,7 +258,7 @@ test('resumed empty Worker turn retries once and restores that retry limit', asy
   const resumed = harness({ reports: [unchanged], branch });
   const retry = await resumed.settle();
   assert.equal(retry.entries.find(e => e.customType === 'pi-sitter-recovery').data.retry, 1);
-  const retriedBranch = [...branch, retry.entries.find(e => e.customType === 'pi-sitter-recovery'),
+  const retriedBranch = [...resumed.entries, retry.entries.find(e => e.customType === 'pi-sitter-recovery'),
     { type: 'message', message: { role: 'assistant', content: [] } }];
   const resumedAgain = harness({ reports: [unchanged], branch: retriedBranch });
   assert.equal(await resumedAgain.settle(), undefined);
@@ -262,16 +266,14 @@ test('resumed empty Worker turn retries once and restores that retry limit', asy
 
 test('each manual recover resets the attempt and verification limits, including after resume', async () => {
   const unchanged = report('04', 'u'.repeat(64), [['A', 'FAIL']]);
-  const plan = createRecoveryPlan(unchanged, 'Current Worker task');
+  const initial = harness({ reports: [unchanged] });
+  const first = await initial.settle();
+  const recorded = initial.entries.filter(e => e.customType !== 'pi-sitter-verification-attempt');
   const branch = [
     ...Array.from({ length: 5 }, () => ({ type: 'custom', customType: 'pi-sitter-verification-attempt',
       data: { stage: '04', attempt: 1 } })),
-    { type: 'custom', customType: 'pi-sitter-verification', data: unchanged },
-    { type: 'custom', customType: 'pi-sitter-completion', data: {
-      stage: '04', decision: 'RECOVERY_REQUIRED', task: 'Current Worker task', snapshotIdentity: unchanged.snapshotIdentity,
-      counts: unchanged.counts, failedGateIds: ['A'], unverifiedGateIds: [], regressions: [], attempt: 2 } },
-    { type: 'custom', customType: 'pi-sitter-recovery', data: {
-      attempt: 2, plan, delivery: 'committed_for_continuation' } },
+    ...recorded,
+    first.entries.find(e => e.customType === 'pi-sitter-recovery'),
     { type: 'message', message: { role: 'assistant', content: [] } },
   ];
   const h = harness({ reports: [unchanged], branch });
