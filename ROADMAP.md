@@ -13,9 +13,9 @@
 | P5 — Integrated qualification | Multiple unrelated fixtures incl. non-Godot; existing trigger regression and package/loader checks | Exact source-bound headless + real Pi evidence matrix |
 | P6 — Owner manual closeout | Real installed Pi session / MCP / release evidence review | Owner explicitly approves or holds 1.0.0 release |
 
-F0-R/P1–P6 are conceptual workstreams, now mapped to **P1–P9 authored implementation prompt files and a P10 manual closeout**; the prompt files have **not** been executed. See [docs/tasks/p1/README.md](docs/tasks/p1/README.md).
+F0-R/P1–P6 remain conceptual workstreams with historical P1–P9 implementation and P10 manual closeout prompt files. Those prompts have **not** been executed and their fixed versions are superseded. See [docs/tasks/p1/README.md](docs/tasks/p1/README.md).
 
-The unmodified Dope runner's historical `p1` sequence would use intermediate `0.1.1` through `0.1.N` checkpoints from the current `0.1.0` baseline. **`1.0.0` is reserved for independently qualified owner-approved publication**; no version bump is authorized by docs-apply.
+**Owner-approved 2026-11-23:** [change-driven versioning](docs/VERSIONING.md) / [ADR 0002](docs/decisions/0002-change-driven-versioning.md) requires one patch increment per successful repository-changing prompt, independent of phase. The original runner and authored P1 stack are **on hold pending migration**; this docs-only action does not change manifest `0.1.0`. **`1.0.0` still requires independent owner-approved release qualification**.
 
 ## Source-audited work mapping — Issue #3
 
