@@ -1,5 +1,7 @@
 # Pi Sitter — Current Implementation and Handoff
 
+**2026-11-23 documentation-only policy addendum:** [ADR 0002](docs/decisions/0002-change-driven-versioning.md) and [versioning policy](docs/VERSIONING.md) approve one next-patch increment per successful prompt retaining changes in this repository, not per phase. The migration **has not been implemented or qualified**; package version remains `0.1.0` in the checked GitHub baseline, fixed-version P1–P10 prompts cannot be executed as-is, and no npm publishing/release is authorized.
+
 **As of:** 2026-11-21. **Architecture:** 10/10 owner decisions approved in [GitHub issue #1](https://github.com/jfin602/pi-sitter/issues/1). **Documentation application:** this foundation follows approved [review #2](https://github.com/jfin602/pi-sitter/issues/2). **Release:** `0.1.0` source, not 1.0 qualified or published on the basis of this documentation.
 
 ## Observed on source baseline before this doc application
