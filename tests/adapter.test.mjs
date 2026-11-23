@@ -471,6 +471,32 @@ test('intervention labels an earlier host diagnostic stale after a saved update'
   assert.match(delivery.entries[0].content, /saved-script: Main script=missing/);
 });
 
+test('deterministic host diagnostics append ordered, historical terminal verdicts', async () => {
+  const results = [
+    { id: 'one', status: 'FAIL', suite: 'fixture', passed: 1, failed: 1, total: 2,
+      failures: [{ id: 'G2', detail: 'Saved check failed' }] },
+    { id: 'two', status: 'PASS', suite: 'fixture', passed: 2, failed: 0, total: 2 },
+  ];
+  const h = harness('shadow', async () => ready, [], undefined,
+    { projectDiagnostic: async () => results.shift() });
+  const event = { type: 'agent_before_settle', outcome: 'completed', entries: [], continue: false };
+  await h.handlers.get('agent_before_settle')(event, h.ctx);
+  const types = h.entries.map(row => row.customType);
+  assert.ok(types.indexOf('pi-sitter-project-diagnostic-pending') < types.indexOf('pi-sitter-project-diagnostic'));
+  assert.ok(types.indexOf('pi-sitter-project-diagnostic') < types.indexOf('pi-sitter-project-diagnostic-verdict'));
+  const first = h.entries.find(row => row.customType === 'pi-sitter-project-diagnostic-verdict');
+  assert.deepEqual(first.data.failedIds, ['G2']);
+  await h.handlers.get('agent_before_settle')(event, h.ctx);
+  const verdicts = h.entries.filter(row => row.customType === 'pi-sitter-project-diagnostic-verdict');
+  assert.equal(verdicts.length, 2);
+  const renderer = h.entryRenderers.get('pi-sitter-project-diagnostic-verdict');
+  const theme = { appearance: 'dark', style: text => text };
+  assert.match(renderer(verdicts[0], { expanded: false }, theme).render(100).join('\n'), /HISTORICAL/);
+  assert.match(renderer(verdicts[1], { expanded: false }, theme).render(100).join('\n'), /Host validation passed: 2\/2 checks/);
+  h.handlers.get('session_start')({ type: 'session_start', reason: 'resume' }, h.ctx);
+  assert.equal(h.entries.filter(row => row.customType === 'pi-sitter-project-diagnostic-verdict').length, 2);
+});
+
 test('deterministic no-op fallback steers only Active mode and stops at its own advisory budget', async () => {
   const limits = { ...piSitterLimits(), maxInferenceAttempts: 1, maxValidAdvisories: 0, maxFallbackAdvisories: 1 };
   const emitNoop = (h, id, property) => {

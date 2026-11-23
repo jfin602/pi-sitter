@@ -88,6 +88,36 @@ export function operationSignature(name: string, input: unknown): string {
   return `${name}|${createHash('sha256').update(stable(args ?? {})).digest('hex')}`;
 }
 
+/** Keep route identity before large tool bodies are discarded from advisory history. */
+export function advisoryArgs(name: string, input: unknown): string {
+  let args = input;
+  if (typeof args === 'string') try { args = JSON.parse(args); } catch { return '{}'; }
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return '{}';
+  if (!/(?:^|_)(?:write|edit)(?:_|$)/.test(name)) return JSON.stringify(args).slice(0, 256);
+  const safe: Record<string, string | number | boolean | null> = {};
+  for (const key of ['path', 'script_path', 'scene_path', 'file', 'uri']) {
+    const value = (args as Record<string, unknown>)[key];
+    if (typeof value === 'string') safe[key] = value.slice(0, 160);
+  }
+  for (const [key, value] of Object.entries(args)) {
+    if (/(?:^|_)(?:path|file|uri)$/.test(key) && typeof value === 'string' && !Object.hasOwn(safe, key))
+      safe[key] = value.slice(0, 160);
+    else if (/^(?:dry_run|operation|op|property|node_path)$/.test(key) &&
+        (typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string' && value.length <= 80)) safe[key] = value;
+    else if (key === 'value' && value === null) safe.value = null;
+  }
+  return JSON.stringify(safe).slice(0, 512);
+}
+
+export function toolTargetPath(input: unknown): string | undefined {
+  let args = input;
+  if (typeof args === 'string') try { args = JSON.parse(args); } catch { return; }
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return;
+  const path = Object.entries(args).find(([key, value]) =>
+    /(?:^|_)(?:path|file|uri)$/.test(key) && typeof value === 'string' && value.length <= 160)?.[1];
+  return typeof path === 'string' ? path : undefined;
+}
+
 function isMutation(name: string): boolean {
   return /(?:create_|set_|write|attach_|save_scene|add_|remove_|delete_|rename_|update_|apply_)/.test(name);
 }
@@ -282,8 +312,9 @@ export class PiSitterEngine {
           previous.epoch === this.progressEpoch ? { ...previous, count: Math.min(previous.count + 1, IDLE_INSPECTION_THRESHOLD + 1) } :
           { operation: argsKey, receipt: inspectionReceipt, count: 1, epoch: this.progressEpoch };
       } else this.idleInspection = undefined;
-      const argsPreview = (typeof event.args === 'string' ? event.args : JSON.stringify(event.args ?? {})).slice(0, 256);
-      bounded(this.recent, { ...event, args: argsPreview, isError: error, result: compact(event.result).slice(0, 400) }, MAX_TOOLS);
+      const argsPreview = advisoryArgs(event.toolName, event.args);
+      bounded(this.recent, { ...event, args: argsPreview, operationKey: argsKey,
+        isError: error, result: compact(event.result).slice(0, 400) }, MAX_TOOLS);
       if (classification.kind === 'PROGRESS') {
         this.progressEpoch++;
         this.setupHistory.length = 0;

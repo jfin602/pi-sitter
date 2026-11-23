@@ -99,6 +99,12 @@ function entries(session, type) {
   return session.sessionManager.getBranch().filter(entry => entry.type === 'custom' && entry.customType === type);
 }
 
+const verdictType = 'pi-sitter-project-diagnostic-verdict';
+function verdictText(session, entry) {
+  const renderer = session.extensionRunner.getEntryRenderer(verdictType);
+  return renderer(entry, { expanded: false }, { appearance: 'dark', style: text => text }).render(100).join('\n');
+}
+
 test('native Pi discovers the project test command without a startup notification', async () => {
   const h = await nativeSession({ projectTest: true, responses: [fauxAssistantMessage('Ready for host verification.')] });
   try {
@@ -215,6 +221,11 @@ test('native Pi uses host diagnostic failure for one repair continuation and rer
     assert.equal(entries(h.session, 'pi-sitter-project-diagnostic-pending').length, 1);
     assert.equal(entries(h.session, 'pi-sitter-project-diagnostic').at(-1).data.followup.status, 'PASS');
     assert.equal(entries(h.session, 'pi-sitter-project-diagnostic-retry').length, 1);
+    const verdicts = entries(h.session, verdictType);
+    assert.equal(verdicts.length, 1);
+    assert.match(verdictText(h.session, verdicts[0]), /Host validation passed: 1\/1 checks/);
+    assert.match(verdictText(h.session, verdicts[0]), /HOST DIAGNOSTIC PASS/);
+    assert.equal(h.session.sessionManager.getBranch().at(-1).customType, verdictType);
     assert.equal(entries(h.session, 'pi-sitter-verification-attempt').length, 0);
     assert.equal(entries(h.session, 'pi-sitter-verification-pending').filter(row => row.data.unavailable).length, 0);
   } finally { await h.close(); }
@@ -232,11 +243,129 @@ test('native Pi repeated host diagnostic failure stops after one repair continua
     assert.equal(h.seen.diagnostics, 2);
     assert.equal(entries(h.session, 'pi-sitter-project-diagnostic-retry').length, 1);
     assert.equal(entries(h.session, 'pi-sitter-project-diagnostic').at(-1).data.status, 'FAIL');
+    assert.match(verdictText(h.session, entries(h.session, verdictType)[0]), /Completion blocked: 2\/2 host checks still failing/);
     const retry = JSON.stringify(h.seen.requests[1]);
     assert.ok(retry.indexOf('saved-state: \\"Main script=missing') < retry.indexOf('downstream: \\"behavior unavailable'));
     assert.doesNotMatch(retry, /protected\.test\.js|at \/host/);
     assert.match(retry, /Do not repeat an unchanged inspection/);
     assert.match(retry, /repair that artifact in place, save it, and read it back/);
+  } finally { await h.close(); }
+});
+
+test('saved Stage 05 55/66 to 58/66 pattern ends after Worker claim with eight failed IDs', async () => {
+  const failedIds = ['MD-METEOR-AREA-CONNECTION', 'MD-METEOR-STRUCK-ONCE',
+    'MD-INVULNERABILITY-EXPIRES', 'MD-GAMEOVER-STATE', 'MD-GAMEOVER-STOP-SPAWN',
+    'MD-GAMEOVER-STOP-MOVEMENT', 'MD-GAMEOVER-CLEAR', 'MD-COLLISION-PHYSICAL'];
+  const first = { id: 'stage05-first', status: 'FAIL', suite: 'meteor-dodge-v1', passed: 55, failed: 11, total: 66,
+    failures: [...failedIds, 'MD-AUDIO-COLLISION', 'MD-AUDIO-COLLISION-PLAY', 'MD-OTHER'].map(id => ({ id, detail: 'Saved check failed' })) };
+  const second = { id: 'stage05-repair', status: 'FAIL', suite: 'meteor-dodge-v1', passed: 58, failed: 8, total: 66,
+    failures: failedIds.map(id => ({ id, detail: 'Saved check still fails' })) };
+  const h = await nativeSession({ responses: [fauxAssistantMessage('Initial completion claim.'),
+    fauxAssistantMessage('Everything is fixed now.')], diagnostics: [first, second] });
+  try {
+    await h.session._startRun({ messageType: 'user', prompt: 'Finish Stage 05' });
+    const branch = h.session.sessionManager.getBranch();
+    const verdicts = entries(h.session, verdictType);
+    assert.equal(verdicts.length, 1);
+    assert.equal(verdicts[0].data.runId, 'stage05-repair');
+    assert.deepEqual(verdicts[0].data.failedIds, failedIds);
+    assert.equal(branch.at(-1).customType, verdictType);
+    assert.match(verdictText(h.session, verdicts[0]), /Completion blocked: 8\/66 host checks still failing/);
+    assert.match(verdictText(h.session, verdicts[0]), /MD-COLLISION-PHYSICAL/);
+    await h.session.extensionRunner.emit({ type: 'session_start', reason: 'resume' });
+    assert.equal(entries(h.session, verdictType).length, 1);
+    assert.match(verdictText(h.session, verdicts[0]), /HOST DIAGNOSTIC FAIL/);
+    await h.session._tryExecuteExtensionCommand('/sitter verify');
+    assert.equal(entries(h.session, verdictType).length, 1);
+    assert.match(verdictText(h.session, verdicts[0]), /Completion blocked: 8\/66/);
+    assert.equal(entries(h.session, 'pi-sitter-completion').at(-1).data.decision, 'BLOCKED');
+  } finally { await h.close(); }
+});
+
+test('blocked or malformed host diagnostics end with unknown failure count', async () => {
+  for (const diagnostics of [[{ id: 'blocked-run', status: 'BLOCKED', passed: 0, failed: 0, total: 0,
+    reason: 'Host runner timed out' }], [{ status: 'PASS', passed: 1, failed: 0, total: 2 }]]) {
+    const h = await nativeSession({ responses: [fauxAssistantMessage('Done.')], diagnostics });
+    try {
+      await h.session._startRun({ messageType: 'user', prompt: 'Finish the task' });
+      const verdict = entries(h.session, verdictType)[0];
+      assert.equal(verdict.data.status, 'BLOCKED');
+      assert.match(verdictText(h.session, verdict), /failure count unknown/);
+      assert.doesNotMatch(verdictText(h.session, verdict), /validation passed/);
+    } finally { await h.close(); }
+  }
+  const thrown = await nativeSession({ responses: [fauxAssistantMessage('Done.')],
+    diagnostics: () => { throw new Error('Host callback crashed'); } });
+  try {
+    await thrown.session._startRun({ messageType: 'user', prompt: 'Finish the task' });
+    assert.match(verdictText(thrown.session, entries(thrown.session, verdictType)[0]), /Host callback crashed/);
+  } finally { await thrown.close(); }
+});
+
+test('a later Worker report makes a prior passing host verdict historical while the next check runs', async () => {
+  const gates = [];
+  const h = await nativeSession({ responses: [fauxAssistantMessage('First report.'), fauxAssistantMessage('Second report.')],
+    diagnostics: () => new Promise(resolve => gates.push(resolve)) });
+  try {
+    const firstRun = h.session._startRun({ messageType: 'user', prompt: 'First task' });
+    for (let i = 0; i < 100 && gates.length < 1; i++) await new Promise(setImmediate);
+    gates[0]({ status: 'PASS', passed: 1, failed: 0, total: 1 });
+    await firstRun;
+    const firstVerdict = entries(h.session, verdictType)[0];
+    assert.match(verdictText(h.session, firstVerdict), /HOST DIAGNOSTIC PASS/);
+    const secondRun = h.session._startRun({ messageType: 'user', prompt: 'More work' });
+    for (let i = 0; i < 100 && gates.length < 2; i++) await new Promise(setImmediate);
+    assert.match(verdictText(h.session, firstVerdict), /HISTORICAL/);
+    assert.equal(entries(h.session, verdictType).length, 1);
+    gates[1]({ status: 'PASS', passed: 1, failed: 0, total: 1 });
+    await secondRun;
+    assert.equal(entries(h.session, verdictType).length, 2);
+    assert.match(verdictText(h.session, entries(h.session, verdictType)[1]), /HOST DIAGNOSTIC PASS/);
+  } finally {
+    for (const resolve of gates) resolve({ status: 'BLOCKED', passed: 0, failed: 0, total: 0 });
+    await h.close();
+  }
+});
+
+test('replay of an interrupted pending diagnostic records one blocked verdict and ignores its late PASS', async () => {
+  let resolveDiagnostic;
+  const h = await nativeSession({ responses: [fauxAssistantMessage('Worker report.')],
+    diagnostics: () => new Promise(resolve => { resolveDiagnostic = resolve; }) });
+  let run;
+  try {
+    run = h.session._startRun({ messageType: 'user', prompt: 'Finish the task' });
+    for (let i = 0; i < 100 && !resolveDiagnostic; i++) await new Promise(setImmediate);
+    assert.ok(resolveDiagnostic);
+    assert.equal(entries(h.session, verdictType).length, 0);
+    await h.session.extensionRunner.emit({ type: 'session_start', reason: 'resume' });
+    const verdicts = entries(h.session, verdictType);
+    assert.equal(verdicts.length, 1);
+    assert.equal(verdicts[0].data.status, 'BLOCKED');
+    assert.match(verdictText(h.session, verdicts[0]), /failure count\s+unknown/);
+    resolveDiagnostic({ status: 'PASS', passed: 1, failed: 0, total: 1 });
+    await run;
+    assert.equal(entries(h.session, verdictType).length, 1);
+    assert.equal(entries(h.session, 'pi-sitter-project-diagnostic').length, 0);
+  } finally {
+    resolveDiagnostic?.({ status: 'BLOCKED', passed: 0, failed: 0, total: 0 });
+    if (run) await run;
+    await h.close();
+  }
+});
+
+test('aborted repair continuation ends with unavailable validation instead of the Worker claim', async () => {
+  const h = await nativeSession({ responses: [fauxAssistantMessage('Initial claim.'),
+    fauxAssistantMessage([], { stopReason: 'aborted' })], diagnostics: [
+    { id: 'first-failure', status: 'FAIL', passed: 0, failed: 1, total: 1,
+      failures: [{ id: 'CHECK', detail: 'Saved check failed' }] }] });
+  try {
+    await h.session._startRun({ messageType: 'user', prompt: 'Finish the task' });
+    assert.equal(h.seen.diagnostics, 1);
+    const verdicts = entries(h.session, verdictType);
+    assert.equal(verdicts.length, 1);
+    assert.equal(verdicts[0].data.status, 'BLOCKED');
+    assert.match(verdictText(h.session, verdicts[0]), /Worker continuation ended before the follow-up host diagnostic/);
+    assert.equal(h.session.sessionManager.getBranch().at(-1).customType, verdictType);
   } finally { await h.close(); }
 });
 
@@ -349,6 +478,10 @@ test('native Pi skips host diagnostic on abort or provider error and when protec
     assert.equal(configured.seen.diagnostics, 0);
     assert.equal(configured.seen.verifies, 1);
     assert.equal(entries(configured.session, 'pi-sitter-completion').at(-1).data.decision, 'VERIFIED');
+    const completion = entries(configured.session, 'pi-sitter-completion').at(-1);
+    const completionText = configured.session.extensionRunner.getEntryRenderer('pi-sitter-completion')(
+      completion, { expanded: false }, { appearance: 'dark', style: text => text }).render(100).join('\n');
+    assert.match(completionText, /Protected gates: 1\/1 passed/);
   } finally { await configured.close(); }
 });
 

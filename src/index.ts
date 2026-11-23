@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, Theme, ToolExecutionEndEvent } from '@earendil-works/pi-coding-agent';
 import { randomUUID } from 'node:crypto';
-import { PiSitterEngine, classifyObservation, operationSignature, resultFingerprint, type Trigger, type PiSitterMode, type Validator } from './core.ts';
+import { PiSitterEngine, advisoryArgs, classifyObservation, operationSignature, resultFingerprint, toolTargetPath, type Trigger, type PiSitterMode, type Validator } from './core.ts';
 import { piSitterLimits, type PiSitterLimits } from './config.ts';
 import { parseDiagnosis, runInference, type Diagnosis, type InferenceOutcome, type LoadedCheck } from './inference.ts';
 import { genericFallback, type FallbackProvider } from './fallback.ts';
@@ -48,6 +48,7 @@ const ANALYSIS_TYPE = 'pi-sitter-analysis';
 const DELIVERY_CONFIRM_TYPE = 'pi-sitter-delivery-confirmed';
 const DELIVERY_FAILURE_TYPE = 'pi-sitter-delivery-unconfirmed';
 const WORKER_RECOVERY_TYPE = 'pi-sitter-worker-recovery';
+const WORKER_UNRESOLVED_TYPE = 'pi-sitter-worker-unresolved';
 const TASK_HISTORY_TYPE = 'pi-sitter-task-history';
 const CONTROLLER_TYPE = 'pi-sitter-controller-inventory';
 const STARTUP_TYPE = 'pi-sitter-startup';
@@ -57,10 +58,14 @@ const EMPTY_FINAL_MESSAGE_TYPE = 'pi-sitter-empty-final-followup';
 const PROJECT_DIAGNOSTIC_TYPE = 'pi-sitter-project-diagnostic';
 const PROJECT_DIAGNOSTIC_PENDING_TYPE = 'pi-sitter-project-diagnostic-pending';
 const PROJECT_DIAGNOSTIC_RETRY_TYPE = 'pi-sitter-project-diagnostic-retry';
+const PROJECT_DIAGNOSTIC_VERDICT_TYPE = 'pi-sitter-project-diagnostic-verdict';
 const MAX_NO_PROGRESS_RETRIES = 1;
 interface EmptyFinalEntry { stage: string; messageEntryId: string; phase: 'continuing' | 'stopped' }
 export interface ProjectDiagnosticResult {
   status: 'PASS' | 'FAIL' | 'BLOCKED';
+  /** Optional identity supplied by the host diagnostic runner. */
+  id?: string;
+  runId?: string;
   suite?: string;
   passed: number;
   failed: number;
@@ -82,6 +87,20 @@ type ProjectDiagnosticCard = ProjectDiagnosticResult & {
   rawResult?: ProjectDiagnosticResult;
   rawFollowup?: ProjectDiagnosticResult;
   followupProgressVersion?: number;
+};
+type ProjectDiagnosticVerdict = {
+  id: string;
+  diagnosticId: string;
+  stage: string;
+  suite?: string;
+  runId?: string;
+  status: ProjectDiagnosticResult['status'];
+  passed: number;
+  failed: number;
+  total: number;
+  failedIds: string[];
+  reason?: string;
+  progressVersion: number;
 };
 type RecoveryEntry = { attempt: number; plan: RecoveryPlan; delivery: string; retry?: number; displayId?: string };
 type RecoveryRequest = { id: string; stage: string; reset: boolean; unavailable?: string };
@@ -223,10 +242,13 @@ function boundedProjectDiagnostic(value: ProjectDiagnosticResult): ProjectDiagno
   if (!value || !['PASS', 'FAIL', 'BLOCKED'].includes(value.status) ||
       ![value.passed, value.failed, value.total].every(n => Number.isInteger(n) && n >= 0 && n <= 100_000) ||
       value.passed + value.failed > value.total ||
+      value.status !== 'BLOCKED' && value.passed + value.failed !== value.total ||
       value.status === 'PASS' && (value.failed !== 0 || value.total === 0 || value.passed !== value.total) ||
       value.status === 'FAIL' && value.failed === 0)
     throw new Error('Host diagnostic returned an invalid result');
   return { status: value.status, suite: typeof value.suite === 'string' ? value.suite.slice(0, 120) : undefined,
+    id: typeof value.id === 'string' ? value.id.slice(0, 160) :
+      typeof value.runId === 'string' ? value.runId.slice(0, 160) : undefined,
     passed: value.passed, failed: value.failed, total: value.total,
     failures: Array.isArray(value.failures) ? [...value.failures].sort((a, b) =>
       Number(/\b(?:missing|saved|container|script=|root=|not found|does not exist)/i.test(b.detail)) -
@@ -276,6 +298,8 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     const diagnosticCards = new Map<string, ProjectDiagnosticCard | 'interrupted' | undefined>();
     let pendingDiagnosticId: string | undefined;
     let activeDiagnosticId: string | undefined;
+    let currentDiagnosticVerdictId: string | undefined;
+    let diagnosticEpoch = 0;
     let pendingVerificationId: string | undefined;
     const recoveryCards = new Map<string, RecoveryEntry | 'interrupted' | undefined>();
     let recoveryPlan: RecoveryPlan | undefined;
@@ -314,6 +338,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     let lastAdviceEpoch: number | undefined;
     let lastAdviceTool: string | undefined;
     let lastAdviceOperation: string | undefined;
+    let lastAdviceTarget: string | undefined;
     let lastAdviceInspectionReceipt: string | undefined;
     let lastObservedResultFingerprint: string | undefined;
     let repeatedAfterAdvice = 0;
@@ -331,6 +356,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     // A new user turn starts a new bounded completion cycle. Automatic recovery
     // messages are custom turns and retain the current cycle's limits.
     function startUserCompletionCycle(): void {
+      diagnosticEpoch++;
       recoveryAttempts = 0;
       verificationRuns = 0;
       recoveryKeys.clear();
@@ -341,6 +367,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       unavailableAtCompletionIssued = false;
       projectDiagnosticRetryIssued = false;
       activeDiagnosticId = undefined;
+      currentDiagnosticVerdictId = undefined;
       lastProjectDiagnosticPrompt = undefined;
       lastDiagnostic = undefined;
       handledEmptyFinalMessages.clear();
@@ -978,6 +1005,36 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       if (!value || (value.displayId && diagnosticCards.has(value.displayId))) return;
       return diagnosticCard(() => value, value.stage, () => false, expanded, theme);
     });
+    function appendDiagnosticVerdict(diagnosticId: string, result: ProjectDiagnosticResult,
+      progressVersion: number, stage = engine.stage): void {
+      const verdict: ProjectDiagnosticVerdict = { id: randomUUID(), diagnosticId, stage,
+        suite: result.suite, runId: result.id ?? result.runId, status: result.status,
+        passed: result.status === 'BLOCKED' ? 0 : result.passed,
+        failed: result.status === 'BLOCKED' ? 0 : result.failed,
+        total: result.status === 'BLOCKED' ? 0 : result.total,
+        failedIds: result.status === 'FAIL' ? [...new Set((result.failures ?? []).map(row => row.id))].slice(0, 12) : [],
+        reason: result.reason, progressVersion };
+      currentDiagnosticVerdictId = verdict.id;
+      pi.appendEntry(PROJECT_DIAGNOSTIC_VERDICT_TYPE, verdict);
+    }
+    pi.registerEntryRenderer<ProjectDiagnosticVerdict>(PROJECT_DIAGNOSTIC_VERDICT_TYPE, (entry, { expanded }, theme) => {
+      const value = entry.data;
+      if (!value?.id) return;
+      return { render(width: number) {
+        const current = value.id === currentDiagnosticVerdictId && value.stage === engine.stage;
+        const summary = value.status === 'PASS' ? `Host validation passed: ${value.passed}/${value.total} checks` :
+          value.status === 'FAIL' ? `Completion blocked: ${value.failed}/${value.total} host checks still failing` :
+          `Host validation blocked: ${value.reason ?? 'Diagnostic unavailable'}; failure count unknown`;
+        return supervisorCard(theme, { stage: value.stage, status: current ? `HOST DIAGNOSTIC ${value.status}` : 'HISTORICAL',
+          summary: current ? summary : `Historical host diagnostic: ${summary}`,
+          details: [
+            `Suite ${value.suite ?? 'host project diagnostic'}${value.runId ? `; run ${value.runId}` : ''}`,
+            `Saved progress version ${value.progressVersion}; diagnostic attempt ${value.diagnosticId}`,
+            ...(value.status === 'FAIL' && value.failedIds.length ? [`Failed IDs: ${value.failedIds.join(', ')}`] : []),
+            ...(expanded ? ['Host diagnostic only; protected acceptance and independent requirement review are separate.'] : []),
+          ], tone: current && value.status === 'PASS' ? 'normal' : 'failure' }, width);
+      }, invalidate() {} };
+    });
     pi.registerEntryRenderer<OutcomeEntry>(OUTCOME_TYPE, (entry, { expanded }, theme) => {
       const data = entry.data;
       if (!data) return;
@@ -1069,12 +1126,14 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           `${value.counts.FAIL} failed: ${value.failedGateIds.join(', ') || value.reason}` :
           value.decision === 'UNVERIFIED' ?
             `${value.counts.UNVERIFIED} unverified: ${value.unverifiedGateIds.join(', ') || value.reason}` : value.reason;
+      const protectedTotal = value.counts ? value.counts.PASS + value.counts.FAIL + value.counts.UNVERIFIED : 0;
       const tone: CardTone = value.decision === 'VERIFIED' ? 'normal' :
         value.decision === 'RECOVERY_REQUIRED' && value.attempt < limits.maxRecoveryAttempts ? 'recovery' : 'failure';
       return supervisorCard(theme, {
         stage: value.stage,
         status: historical ? 'HISTORICAL' : value.decision === 'RECOVERY_REQUIRED' && tone === 'failure' ? 'FAILED' : value.decision,
-        summary, details: expanded ? [value.reason, ...(value.requirements ?? []).map(row =>
+        summary: historical ? summary : `${summary}\n${protectedTotal ? `Protected gates: ${value.counts.PASS}/${protectedTotal} passed` : 'Protected gate count unknown'}`,
+        details: expanded ? [value.reason, ...(value.requirements ?? []).map(row =>
           `${row.id} ${row.status}: ${row.reason}${row.evidence.length ? ` (${row.evidence.map(item => `${item.path}:${item.line}`).join(', ')})` : ''}`)] : [], tone,
       }, width);
     }
@@ -1173,6 +1232,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
 
     pi.on('session_start', (_event, ctx) => {
       try {
+        diagnosticEpoch++;
         cancelInterventions('Session changed during supervision', false);
         controller?.abort(new Error('Pi Sitter session changed'));
         verificationController?.abort(new Error('Pi Sitter session changed'));
@@ -1201,6 +1261,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         diagnosticCards.clear();
         activeDiagnosticId = undefined;
         pendingDiagnosticId = undefined;
+        currentDiagnosticVerdictId = undefined;
         recoveryCards.clear();
         recoveryPlan = undefined;
         recoveryAttempts = 0;
@@ -1233,6 +1294,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         lastAdviceEpoch = undefined;
         lastAdviceTool = undefined;
         lastAdviceOperation = undefined;
+        lastAdviceTarget = undefined;
         lastAdviceInspectionReceipt = undefined;
         lastObservedResultFingerprint = undefined;
         repeatedAfterAdvice = 0;
@@ -1240,8 +1302,12 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         awaitingContext.clear();
         const stage = process.env.PI_SITTER_STAGE ?? 'current';
         let historicalTask = '';
+        let replayPendingDiagnosticId: string | undefined;
         for (const entry of ctx.sessionManager.getBranch()) {
-          if (entry.type === 'message' && entry.message.role === 'user') startUserCompletionCycle();
+          if (entry.type === 'message' && entry.message.role === 'user') {
+            startUserCompletionCycle();
+            replayPendingDiagnosticId = undefined;
+          }
           if (entry.type === 'message' && lastRecovery && entry.message.role === 'assistant') recoveryTurnObserved = true;
           if (entry.type !== 'custom') continue;
           if (entry.customType === TASK_HISTORY_TYPE && entry.data && typeof entry.data === 'object') {
@@ -1259,8 +1325,18 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           }
           if (entry.customType === PROJECT_DIAGNOSTIC_RETRY_TYPE && entry.data && typeof entry.data === 'object' &&
               (entry.data as { stage?: string }).stage === stage) projectDiagnosticRetryIssued = true;
+          if (entry.customType === PROJECT_DIAGNOSTIC_PENDING_TYPE && entry.data && typeof entry.data === 'object' &&
+              (entry.data as { stage?: string }).stage === stage) {
+            currentDiagnosticVerdictId = undefined;
+            replayPendingDiagnosticId = (entry.data as { id?: string }).id;
+          }
           if (entry.customType === PROJECT_DIAGNOSTIC_TYPE && entry.data && typeof entry.data === 'object') {
             const saved = entry.data as ProjectDiagnosticCard;
+            if (saved.stage === stage && saved.followupPending) {
+              currentDiagnosticVerdictId = undefined;
+              replayPendingDiagnosticId = saved.displayId;
+            } else if (saved.stage === stage && saved.displayId === replayPendingDiagnosticId)
+              replayPendingDiagnosticId = undefined;
             if (saved.stage === stage && saved.displayId) {
               diagnosticCards.set(saved.displayId, saved);
               activeDiagnosticId = saved.displayId;
@@ -1271,6 +1347,13 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
               lastDiagnostic = latest.status === 'FAIL' ? { stage,
                 failed: latest.failed, total: latest.total, failures: latest.failures ?? [],
                 progressVersion: saved.followup ? saved.followupProgressVersion ?? -1 : saved.progressVersion ?? -1 } : undefined;
+            }
+          }
+          if (entry.customType === PROJECT_DIAGNOSTIC_VERDICT_TYPE && entry.data && typeof entry.data === 'object') {
+            const saved = entry.data as ProjectDiagnosticVerdict;
+            if (saved.stage === stage && typeof saved.id === 'string') {
+              currentDiagnosticVerdictId = saved.id;
+              if (saved.diagnosticId === replayPendingDiagnosticId) replayPendingDiagnosticId = undefined;
             }
           }
           if (entry.customType === INTERVENTION_TYPE && entry.data && typeof entry.data === 'object')
@@ -1358,6 +1441,17 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
             totalLatencyMs += saved.latencyMs ?? 0;
             if (saved.kind === 'delivered' && saved.issue && saved.nextAction) adviceKeys.add(`${saved.issue.toLowerCase()}|${saved.nextAction.toLowerCase()}`);
           }
+        }
+        if (replayPendingDiagnosticId) {
+          const card = diagnosticCards.get(replayPendingDiagnosticId);
+          if (card && card !== 'interrupted') diagnosticCards.set(replayPendingDiagnosticId, {
+            ...card, followupPending: false,
+            followup: { status: 'BLOCKED', passed: 0, failed: 0, total: 0,
+              reason: 'Host diagnostic interrupted before a result was recorded' },
+          });
+          appendDiagnosticVerdict(replayPendingDiagnosticId,
+            { status: 'BLOCKED', passed: 0, failed: 0, total: 0,
+              reason: 'Host diagnostic interrupted before a result was recorded' }, engine.progressVersion, stage);
         }
         interventions.interruptPending('Supervision ended before a result was recorded');
         for (const [id, state] of diagnosticCards) {
@@ -1491,7 +1585,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     pi.on('tool_execution_start', event => {
       try {
         if (pendingArgs.size >= 32) pendingArgs.delete(pendingArgs.keys().next().value!);
-        pendingArgs.set(event.toolCallId, { preview: JSON.stringify(event.args ?? {}).slice(0, 256),
+        pendingArgs.set(event.toolCallId, { preview: advisoryArgs(event.toolName, event.args),
           signature: operationSignature(event.toolName, event.args) });
       } catch { /* Capture is best effort. */ }
     });
@@ -1508,8 +1602,14 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         const classification = classifyObservation(observation);
         const trigger = engine.observe(observation);
         lastObservedResultFingerprint = resultFingerprint(event.result);
+        const advisedTarget = lastAdviceTarget;
+        const sameAdvisedTarget = !!advisedTarget && toolTargetPath(args?.preview) === advisedTarget;
+        const savedRepairRoute = advisedTarget !== undefined && sameAdvisedTarget && (event.toolName === lastAdviceTool ||
+          /(?:^|__)godot_scripts_write$/.test(event.toolName) && /\.gd$/i.test(advisedTarget) ||
+          /(?:^|__)godot_scene_edit_save_scene$/.test(event.toolName) && /\.(?:tscn|scn)$/i.test(advisedTarget));
         if (lastAdviceEpoch !== undefined && classification.kind === 'PROGRESS' &&
-            event.toolName === lastAdviceTool && engine.progressVersion > lastAdviceEpoch) {
+            (lastAdviceTarget ? savedRepairRoute : event.toolName === lastAdviceTool) &&
+            engine.progressVersion > lastAdviceEpoch) {
           workerRecoveries++;
           if (lastAdviceInterventionId) actedInterventions.add(lastAdviceInterventionId);
           try { pi.appendEntry(WORKER_RECOVERY_TYPE, { tool: event.toolName, progressVersion: engine.progressVersion,
@@ -1518,15 +1618,22 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           lastAdviceEpoch = undefined;
           lastAdviceTool = undefined;
           lastAdviceOperation = undefined;
+          lastAdviceTarget = undefined;
           lastAdviceInspectionReceipt = undefined;
           repeatedAfterAdvice = 0;
           view.finish('ready', 'Worker recovery observed: saved change');
           render(ctx);
-        } else if (lastAdviceEpoch !== undefined && args?.signature === lastAdviceOperation &&
+        } else if (lastAdviceEpoch !== undefined &&
+            (args?.signature === lastAdviceOperation || event.toolName === lastAdviceTool &&
+              !!lastAdviceTarget && toolTargetPath(args?.preview) === lastAdviceTarget) &&
             (classification.kind === 'NO_CHANGE' || classification.kind === 'ERROR' ||
               (classification.kind === 'INSPECTION' && lastAdviceInspectionReceipt !== undefined &&
                 resultFingerprint(event.result) === lastAdviceInspectionReceipt))) {
           repeatedAfterAdvice++;
+          if (repeatedAfterAdvice === 1) try {
+            pi.appendEntry(WORKER_UNRESOLVED_TYPE, { interventionId: lastAdviceInterventionId,
+              tool: event.toolName, target: lastAdviceTarget, reason: 'No saved repair after guidance' });
+          } catch { /* Advisory receipt is best effort. */ }
           if (repeatedAfterAdvice === limits.maxRepeatedIneffectiveOps) {
             view.finish('error', 'Loop unresolved: Worker repeated the proven ineffective operation');
             ctx.ui.notify('Pi Sitter: loop unresolved; Worker repeated the ineffective operation after guidance', 'warning');
@@ -1654,11 +1761,13 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         const advisedOperation = triggerObservation(trigger, engine.recent);
         lastAdviceOperation = advisedOperation ? advisedOperation.operationKey ??
           operationSignature(advisedOperation.toolName, advisedOperation.args) : undefined;
+        lastAdviceTarget = advisedOperation ? toolTargetPath(advisedOperation.args) : undefined;
         lastAdviceInspectionReceipt = isInspectionLoop(trigger) ?
           trigger.receiptFingerprint ?? lastObservedResultFingerprint : undefined;
         repeatedAfterAdvice = 0;
         const content = buildWorkerDirective({ trigger, diagnosis, recent: engine.recent, task: engine.task,
           stage: engine.stage, progressVersion: engine.progressVersion, diagnostic: lastDiagnostic,
+          availableTools: pi.getActiveTools(),
           source: source ?? 'model' });
         view.finish('delivered', content.split('\n')[1] ?? diagnosis.next_action);
         supervisorActivity = source === 'fallback' ? 'Fallback delivered; Worker continuing' : 'Advisory delivered; Worker continuing';
@@ -1708,11 +1817,13 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       const current = new AbortController();
       projectDiagnosticController = current;
       const sessionId = engine.sessionId;
+      const epoch = diagnosticEpoch;
       const prior = activeDiagnosticId && diagnosticCards.get(activeDiagnosticId);
       const followupCard = prior && prior !== 'interrupted' && prior.workerPrompt ? prior : undefined;
       const displayId = followupCard ? activeDiagnosticId! : randomUUID();
       if (!followupCard) activeDiagnosticId = displayId;
       pendingDiagnosticId = displayId;
+      currentDiagnosticVerdictId = undefined;
       if (followupCard) {
         const pendingCard = { ...followupCard, followupPending: true };
         diagnosticCards.set(displayId, pendingCard);
@@ -1735,12 +1846,16 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       } finally {
         if (projectDiagnosticController === current) projectDiagnosticController = undefined;
       }
-      if (current.signal.aborted || engine.sessionId !== sessionId) {
+      if (diagnosticEpoch !== epoch || engine.sessionId !== sessionId) return;
+      if (current.signal.aborted) {
         if (engine.sessionId === sessionId) {
+          const blocked: ProjectDiagnosticResult = { status: 'BLOCKED', passed: 0, failed: 0, total: 0,
+            reason: 'Host diagnostic interrupted before a result was recorded' };
           diagnosticCards.set(displayId, followupCard ? { ...followupCard, followupPending: false,
-            followup: { status: 'BLOCKED', passed: 0, failed: 0, total: 0, reason: 'Follow-up diagnostic interrupted' } } : 'interrupted');
+            followup: blocked } : 'interrupted');
           if (pendingDiagnosticId === displayId) pendingDiagnosticId = undefined;
           if (ctx.hasUI) ctx.ui.setWorkingMessage();
+          appendDiagnosticVerdict(displayId, blocked, engine.progressVersion);
         }
         return;
       }
@@ -1761,7 +1876,10 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       pendingDiagnosticId = undefined;
       if (ctx.hasUI) ctx.ui.setWorkingMessage();
       pi.appendEntry(PROJECT_DIAGNOSTIC_TYPE, card);
-      if (!prompt) return;
+      if (!prompt) {
+        appendDiagnosticVerdict(displayId, result, engine.progressVersion);
+        return;
+      }
       lastProjectDiagnosticPrompt = prompt;
       return { entries: [...event.entries,
         { type: 'custom' as const, customType: PROJECT_DIAGNOSTIC_RETRY_TYPE, data: { stage: engine.stage } },
@@ -1937,13 +2055,21 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
             followup: { status: 'BLOCKED', passed: 0, failed: 0, total: 0,
               reason: 'Follow-up diagnostic interrupted before a result was recorded' } } : 'interrupted');
         pendingDiagnosticId = undefined;
+        appendDiagnosticVerdict(activeDiagnosticId ?? '', { status: 'BLOCKED', passed: 0, failed: 0, total: 0,
+          reason: 'Host diagnostic interrupted before a result was recorded' }, engine.progressVersion);
       }
       if (activeDiagnosticId) {
         const card = diagnosticCards.get(activeDiagnosticId);
-        if (card && card !== 'interrupted' && card.workerPrompt && !card.guidanceReceived && !card.followup) {
-          const failedCard = { ...card, guidanceDeliveryFailed: true };
-          diagnosticCards.set(activeDiagnosticId, failedCard);
-          try { pi.appendEntry(PROJECT_DIAGNOSTIC_TYPE, failedCard); }
+        if (card && card !== 'interrupted' && card.workerPrompt && !card.followup) {
+          if (!card.guidanceReceived) {
+            const failedCard = { ...card, guidanceDeliveryFailed: true };
+            diagnosticCards.set(activeDiagnosticId, failedCard);
+            try { pi.appendEntry(PROJECT_DIAGNOSTIC_TYPE, failedCard); }
+            catch { /* Display failure cannot change Worker control. */ }
+          }
+          if (!currentDiagnosticVerdictId) try { appendDiagnosticVerdict(activeDiagnosticId,
+            { status: 'BLOCKED', suite: card.suite, passed: 0, failed: 0, total: 0,
+              reason: 'Worker continuation ended before the follow-up host diagnostic' }, engine.progressVersion); }
           catch { /* Display failure cannot change Worker control. */ }
         }
       }
@@ -1990,6 +2116,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         diagnosticCards.clear();
         activeDiagnosticId = undefined;
         pendingDiagnosticId = undefined;
+        currentDiagnosticVerdictId = undefined;
         recoveryCards.clear();
         recoveryPlan = undefined;
         recoveryAttempts = 0;
@@ -2002,6 +2129,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         lastAdviceEpoch = undefined;
         lastAdviceTool = undefined;
         lastAdviceOperation = undefined;
+        lastAdviceTarget = undefined;
         lastAdviceInspectionReceipt = undefined;
         lastObservedResultFingerprint = undefined;
         repeatedAfterAdvice = 0;

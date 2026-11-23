@@ -1,0 +1,27 @@
+# Implementation prompt — final supervisor verdict, target 0.2.4
+
+When separately authorized, implement the terminal validation behavior in [the task plan](README.md). Start from the actual Git state, preserve dirty owner work and the saved benchmark game, and do not self-commit. This is a standalone implementation prompt, not a Dope phase-runner prompt.
+
+## Read and preflight
+
+Read `AGENTS.md`, `BOOT.md`, `MODULES.md`, `docs/README.md`, `docs/workflow.md`, `docs/runner.md`, this plan, and the relevant completion and verification contracts. Inspect `src/index.ts` completion and project diagnostic event paths, its card renderers, and focused native tests. Inspect the benchmark `pi-config/sitter-host.ts` only to confirm how its automatic diagnostic is supplied. Read the saved Stage 05 JSONL named in the plan as immutable evidence. Before source edits, inventory mandatory commands and check their availability in the actual implementation environment. Record the previous and target package versions, Git revision and dirty state.
+
+## Goal
+
+After the Worker finishes and the automatic diagnostic cycle settles, the last visible event must be a fresh Pi Sitter validation verdict. The Worker must not appear to have the final word about whether its repair passed. The latest Stage 05 example must end with a verdict equivalent to: `Completion blocked: 8 of 66 host checks still fail`, with the failed gate IDs available. It must never imply that the Worker's repair passed merely because its final response claimed completion.
+
+## Required behavior
+
+1. Preserve the existing automatic host diagnostic cadence: run after the first completed Worker report, issue at most one persisted repair continuation on failure, and rerun after that repair. Do not change T1–T5 triggers, thresholds, inference budgets, Off/Shadow/Active behavior, or the one diagnostic continuation limit.
+2. Keep the existing pending/detail diagnostic card. When the diagnostic cycle settles without another automatic Worker continuation, append one distinct **terminal verdict** after the latest diagnostic. A follow-up diagnostic must append a new verdict rather than only update the earlier card. The verdict carries the stage, suite, diagnostic run identity when supplied, status, exact passed/failed/total counts, bounded failed IDs, and a current saved-state/progress reference. An earlier verdict becomes historical when a later completed automatic diagnostic creates a newer result. On replay, show only the latest current automatic verdict as current and do not duplicate it.
+3. For PASS, say all observed host checks passed, e.g. `Host validation passed: 66/66 checks`; label this as a host diagnostic, not protected acceptance or independent requirement review. For FAIL, say completion is blocked by the exact failure count, e.g. `Completion blocked: 8/66 host checks still failing`, and list a bounded set of failed IDs. For BLOCKED diagnostic execution, state the actual reason; use `failure count unknown` unless a current trusted run supports a count. Never turn missing, skipped, stale or malformed evidence into PASS.
+4. Keep manual `/sitter verify` separate. In the observed run, the owner invoked it after the automatic 58/66 result, and it correctly reported `BLOCKED` because no trusted controller was configured. Its later card must not rewrite or erase the automatic diagnostic verdict. If a protected verifier is configured in another host, its own completion result remains distinct and authoritative for protected gates; it should likewise end with an explicit final status and evidence count.
+5. Ensure cancellation, session switching, callback errors and a late Worker turn cannot leave a stale PASS as the apparent terminal result. A new Worker final report starts a fresh pending validation state. If the diagnostic cannot finish, append an honest blocked or unavailable verdict tied to that attempt. Keep the behavior quiet while the Worker is still implementing.
+
+## Proof and checkpoint
+
+Add meaningful deterministic and native Pi scripted-provider tests covering PASS, FAIL, BLOCKED, first result followed by repair result, pending-to-terminal ordering, replay, manual `/sitter verify`, abort/session switch and stale result suppression. Replay the saved Stage 05 55/66 to 58/66 pattern; assert the last automatic transcript entry is a terminal `8/66` failure verdict after the Worker's final claim. Verify a later successful fixture ends in a truthful passing host verdict and cannot be confused with protected acceptance. Record exact commands, revision, outcomes and live-model/UI gaps in a new task-local implementation ledger.
+
+Run focused tests, `npm run check:all`, `npm pack --dry-run --json`, and `git diff --check` in the actual implementation environment. **Previous package checkpoint: 0.2.3. Target after implementation checks: 0.2.4.** Keep `package.json` at 0.2.3 while implementing. Only after all mandatory checks pass, advance to 0.2.4, update the version compatibility assertion and changelog truthfully, and rerun the checks at 0.2.4. If a required check fails, retain 0.2.3 and report the blocker. The task qualification ledger records planning evidence, not the implemented verdict.
+
+Do not change protected acceptance criteria or suites, claim Stage 05 PASS from the saved 58/66 result, run model-selected acceptance commands, reset the benchmark game, install into a live session, commit, tag or publish merely because this prompt exists. Report the files changed, test results and any remaining evidence gap.

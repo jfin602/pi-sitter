@@ -97,15 +97,24 @@ function alternateRead(trigger: Trigger, recent: readonly ToolObservation[], tas
   return `Read the task-named ${JSON.stringify(taskTarget)} using a different operation; compare its saved content with the requested repair.`;
 }
 
-function fileToolPathCorrection(trigger: Trigger, event: ToolObservation | undefined): string | undefined {
-  if (trigger.type !== 'T1' || !/^(?:read|ls)$/.test(trigger.tool) || !event) return;
+function fileToolPathCorrection(trigger: Trigger, event: ToolObservation | undefined,
+  task: string, availableTools: readonly string[]): string | undefined {
+  if (trigger.type !== 'T1' || !/^(?:read|ls|edit|write)$/.test(trigger.tool) || !event) return;
   let args: unknown = event.args;
   if (typeof args === 'string') try { args = JSON.parse(args); } catch { return; }
   if (!args || typeof args !== 'object' || Array.isArray(args)) return;
   const path = (args as { path?: unknown }).path;
   if (typeof path !== 'string' || !/^res:\/\/[A-Za-z0-9_./-]+$/.test(path) || path.includes('..') ||
-      !/\bres:\//.test(resultText(event))) return;
-  return `Use ${trigger.tool} with ${JSON.stringify({ path: path.slice('res://'.length) })} to inspect the project path. Ordinary file tools need a project-relative path; Godot operations use res:// paths.`;
+      /^(?:read|ls)$/.test(trigger.tool) && !/\bres:\//.test(resultText(event))) return;
+  if (/^(?:edit|write)$/.test(trigger.tool) && /\bGodot (?:Editor )?MCP\b|\bgodot_scripts_write\b/i.test(task)) {
+    const exposed = (name: string) => availableTools.some(tool => tool === name || tool.endsWith(`__${name}`));
+    if (/\.gd$/i.test(path) && exposed('godot_scripts_write'))
+      return `Pi ${trigger.tool} cannot use ${JSON.stringify(path)}. Write that resource with godot_scripts_write using ${JSON.stringify({ script_path: path })}, then check the saved script.`;
+    if (/\.(?:tscn|scn)$/i.test(path) && exposed('godot_scene_edit_open_scene') && exposed('godot_scene_edit_save_scene'))
+      return `Pi ${trigger.tool} cannot use ${JSON.stringify(path)}. Open the scene with godot_scene_edit_open_scene using ${JSON.stringify({ scene_path: path })}, make the requested scene edits through Godot MCP, then call godot_scene_edit_save_scene.`;
+    return `Stop and report that the task's Godot mutation route is unavailable for ${JSON.stringify(path)}; Pi ${trigger.tool} cannot use res:// paths.`;
+  }
+  return `Use ${trigger.tool} with ${JSON.stringify({ path: path.slice('res://'.length) })} to ${/^(?:edit|write)$/.test(trigger.tool) ? 'target' : 'inspect'} the project path. Ordinary file tools need a project-relative path; Godot operations use res:// paths.`;
 }
 
 function explicitPath(value: string): string[] {
@@ -165,7 +174,8 @@ function diagnosticNote(diagnostic: DiagnosticEvidence | undefined, stage: strin
 }
 
 export function buildWorkerDirective(input: { trigger: Trigger; diagnosis: Diagnosis; recent: readonly ToolObservation[];
-  task: string; stage: string; progressVersion: number; diagnostic?: DiagnosticEvidence; source: 'model' | 'fallback' }): string {
+  task: string; stage: string; progressVersion: number; diagnostic?: DiagnosticEvidence;
+  availableTools?: readonly string[]; source: 'model' | 'fallback' }): string {
   const { trigger, diagnosis, recent, task, stage, progressVersion, diagnostic, source } = input;
   const last = triggerObservation(trigger, recent);
   const operation = `${clean(trigger.tool, 100)} with ${argsOf(last)}`;
@@ -176,7 +186,7 @@ export function buildWorkerDirective(input: { trigger: Trigger; diagnosis: Diagn
   const modelAction = source === 'model' && !weakLoopAction(trigger, diagnosis, recent, task, diagnostic) ?
     clean(diagnosis.next_action, 220) : undefined;
   const alternate = alternateRead(trigger, recent, task, diagnostic);
-  const pathCorrection = fileToolPathCorrection(trigger, last);
+  const pathCorrection = fileToolPathCorrection(trigger, last, task, input.availableTools ?? []);
   const next = loop ? modelAction ?? alternate ?? 'Stop this loop and report the blocker; no distinct grounded read is available.' :
     noOp ? modelAction ?? alternate ?? 'Stop and report the blocker; no distinct grounded read is available.' :
       pathCorrection ?? clean(diagnosis.next_action, 220);

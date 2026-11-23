@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { PiSitterEngine, classifyObservation, operationSignature } from '../src/core.ts';
+import { PiSitterEngine, advisoryArgs, classifyObservation, operationSignature } from '../src/core.ts';
 import { buildWorkerDirective, conciseDiagnosticFailures, triggerObservation, weakLoopAction } from '../src/intervention-directive.ts';
 import { genericFallback } from '../src/fallback.ts';
 
@@ -114,6 +114,66 @@ test('file-tool res path failure gives the exact corrected path before repair', 
   assert.match(directive, /Use read with \{"path":"scripts\/meteor\.gd"\}/);
   assert.doesNotMatch(directive, /Next: Inspect the root directory/);
   assert.match(directive, /make a supported change, save it, and check the saved result/);
+});
+
+test('Stage 05 long-body edit retains only its route and directs a Godot script write', () => {
+  const path = 'res://scripts/main.gd';
+  const original = { operation: 'edit'.repeat(20), property: 'source'.repeat(10),
+    oldText: 'x'.repeat(3200), newText: 'private source replacement', path };
+  const preview = advisoryArgs('edit', original);
+  assert.match(preview, /res:\/\/scripts\/main\.gd/);
+  assert.doesNotMatch(preview, /private source|xxxx/);
+  const engine = new PiSitterEngine('active');
+  const task = 'Repair res://scripts/main.gd using Godot Editor MCP.';
+  engine.setTask(task, '05');
+  engine.observe({ toolCallId: 'mcp-read', toolName: 'mcp__godot__godot_scripts_read',
+    args: { script_path: path }, result: { content: [{ type: 'text', text: 'source' }] }, isError: false });
+  const bad = (id, input) => engine.observe({ toolCallId: id, toolName: 'edit', args: input,
+    result: { content: [{ type: 'text', text: `ENOENT: ${path}` }] }, isError: true });
+  assert.equal(bad('first', original), undefined);
+  const trigger = bad('second', original);
+  assert.equal(trigger?.type, 'T1');
+  const directive = buildWorkerDirective({ trigger, diagnosis: diagnosis({ issue: 'Wrong route',
+    evidence: trigger.evidence, nextAction: 'Read the same script again' }), recent: engine.recent,
+    task, stage: '05', progressVersion: engine.progressVersion, source: 'model',
+    availableTools: ['mcp__godot__godot_scripts_write'] });
+  assert.match(directive, /Pi edit cannot use "res:\/\/scripts\/main\.gd"/);
+  assert.match(directive, /godot_scripts_write using \{"script_path":"res:\/\/scripts\/main\.gd"\}/);
+  assert.doesNotMatch(directive, /Next: Read the same script again|private source replacement|xxxx/);
+  const unavailable = buildWorkerDirective({ trigger, diagnosis: diagnosis({ issue: 'Wrong route',
+    evidence: trigger.evidence, nextAction: 'Read the same script again' }), recent: engine.recent,
+    task, stage: '05', progressVersion: engine.progressVersion, source: 'model', availableTools: [] });
+  assert.match(unavailable, /Godot mutation route is unavailable/);
+  assert.doesNotMatch(unavailable, /Next: Use edit/);
+  engine.observe({ toolCallId: 'read', toolName: 'mcp__godot__godot_scripts_read',
+    args: { script_path: path }, result: { content: [{ type: 'text', text: 'source' }] }, isError: false });
+  assert.equal(engine.progressVersion, 0);
+  assert.equal(bad('changed-body', { ...original, newText: 'another source replacement' }), undefined);
+  assert.equal(engine.progressVersion, 0);
+});
+
+test('generic res path mutation gets a project-relative Pi path without replacement text', () => {
+  const trigger = { type: 'T1', tool: 'write', evidence: '2 equivalent failures', key: 'T1:write:fixture:0' };
+  const recent = [{ toolName: 'write', args: advisoryArgs('write', { content: 'secret body', path: 'res://src/main.ts' }),
+    result: 'ENOENT', isError: true }];
+  const directive = buildWorkerDirective({ trigger, diagnosis: diagnosis({ issue: 'Wrong path',
+    evidence: trigger.evidence, nextAction: 'Try again' }), recent,
+    task: 'Write src/main.ts in an ordinary project', stage: 'fixture', progressVersion: 0, source: 'model' });
+  assert.match(directive, /Use write with \{"path":"src\/main\.ts"\}/);
+  assert.doesNotMatch(directive, /secret body/);
+});
+
+test('Godot scene file correction uses exposed scene operations', () => {
+  const trigger = { type: 'T1', tool: 'write', evidence: '2 equivalent failures', key: 'T1:write:scene:0' };
+  const directive = buildWorkerDirective({ trigger, diagnosis: diagnosis({ issue: 'Wrong route',
+    evidence: trigger.evidence, nextAction: 'Try Pi write again' }),
+    recent: [{ toolName: 'write', args: advisoryArgs('write', { path: 'res://main.tscn', content: 'large scene body' }),
+      result: 'ENOENT', isError: true }], task: 'Edit the scene with Godot Editor MCP.',
+    stage: '05', progressVersion: 0, source: 'model',
+    availableTools: ['mcp__godot__godot_scene_edit_open_scene', 'mcp__godot__godot_scene_edit_save_scene'] });
+  assert.match(directive, /godot_scene_edit_open_scene using \{"scene_path":"res:\/\/main\.tscn"\}/);
+  assert.match(directive, /godot_scene_edit_save_scene/);
+  assert.doesNotMatch(directive, /Next: Use write|large scene body/);
 });
 
 test('directive selects the exact triggered arguments when a later call uses the same tool differently', () => {
