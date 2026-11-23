@@ -1,5 +1,7 @@
 # /prompt-ass p1 — Pi Sitter 1.0 Architecture and Safety Assessment
 
+**Historical assessment addendum (2026-11-23):** The P1–P10 fixed versions in the assessment below record the original authoring plan. They have been **superseded** by [ADR 0002](../../decisions/0002-change-driven-versioning.md) and are not executable version assignments. Keep this record for audit, not as the current versioning contract.
+
 **Status:** AUTHORED / NOT EXECUTED; assessment is source-grounded, not 1.0 qualification.  
 **Owner request:** `/prompt-ass + /prompt-plan + /prompt-write p1`; ten-prompt design approved as nine implementation checkpoints and one manual closeout.  
 **Baseline:** main `d028500bc5d79638e9093d964e919d3a978f021f` (`pi-sitter@0.1.0`); [ADR Q1–Q10](../../decisions/0001-ten-approved-decisions.md), [A01–A12 source audit](codebase-gap-audit.md), [source-anchored plan](implementation-plan.md).  

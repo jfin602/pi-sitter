@@ -2,7 +2,7 @@
 
 **Status:** AUTHORED / PROMPTS NOT EXECUTED / 1.0 NOT QUALIFIED.  
 **Basis:** [assessment](prompt-assessment.md), [gap audit](codebase-gap-audit.md), [Q1–Q10](../../decisions/0001-ten-approved-decisions.md).  
-**Version contract:** `pi-sitter@0.1.0` → P1–P9 runner-owned `0.1.1` through `0.1.9`; P10 is blocked manual `0.1.10` closeout. `1.0.0` requires a later independent release approval.
+**Version contract — SUPERSEDED (2026-11-23):** Original P1–P9 fixed `0.1.1`–`0.1.9` and P10 `0.1.10` targets are historical only. [ADR 0002](../../decisions/0002-change-driven-versioning.md) approves the *next actual patch per successful mutation prompt* rather than phase-linked assignments. **Execution is on HOLD** until runner, tests and executable prompt texts migrate; `1.0.0` remains independently owner-authorized.
 
 ## Dependency order (the nine bounded implementation prompts)
 
@@ -34,7 +34,7 @@ Owner starts this separately in a real installed Pi session after inspecting P9 
 - P4–P6: focused sandbox/MCP security tests and existing adapter tests. DENY-DEFAULT if platform unsupported; no unsafe fallbacks to achieve GREEN.
 - P7–P8: concrete evidence linkage, existing trigger goldens and past-report replay matrix; false VERIFIED blocks the sequence.
 - P9: full deterministic test matrix, `npm pack --dry-run`, CI scope and recorded command proof; P10: real manual observations only.
-- Each prompt must leave package version at previous checkpoint if required checks FAIL/BLOCK. Only after real automated checks pass set assigned patch version; runner owns the commit.
+- Under the approved target, successful prompts retaining project changes advance one next-patch checkpoint; failed/blocked/partially dirty work must be reconciled, and retries/resume must not double-bump. The old runner's fixed assignment behavior is **not yet migrated**; do not execute the historical prompts until versioning transition tests pass.
 - Do not touch original Dope runner scripts or root package-lock.json; keep executed prompt files immutable; append corrections and failed qualification evidence rather than rewriting.
 - No implicit scope expansion: owner-approved Q1 preserves current triggers; llm-zone owns formal benchmark criteria and scores.
 - **Authoring caveat:** until P1 test-only transition fix executes, current CI's 'zero prompt files' check is expected to fail on an authored P1 stack. This is not waived or labeled green.

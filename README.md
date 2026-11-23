@@ -53,6 +53,12 @@ npm pack --dry-run
 
 Tests use deterministic worker events, a non-Godot project, a real Pi package loader, and a sandboxed verifier. The package contains TypeScript source under `src/`, so the manifest and exports work from npm or Git installs.
 
+## Repository versioning
+
+[Change-driven versioning](docs/VERSIONING.md) ([ADR 0002](docs/decisions/0002-change-driven-versioning.md)) replaces phase-assigned version checkpoints with one patch increment per successfully completed Pi Sitter repository mutation prompt that retains tracked changes. Read-only/no-op work makes no version change; multiple changed files in one prompt still count once. Major/minor releases and npm publication remain explicitly owner-authorized, not automatic.
+
+**Not yet implemented:** The original Dope phase runner, compatibility tests and authored P1–P10 prompts still enforce fixed versions. That stack is **on execution hold** until the versioning migration is qualified; `package.json` remains `0.1.0` during this documentation application. The repository intentionally disables lockfiles with `.npmrc` (`package-lock=false`); do not generate a lockfile as part of version syncing.
+
 ## Architecture and developer workflow
 
 The [documentation index](docs/README.md), [current implementation status](BOOT.md) and [owner-approved ADR](docs/decisions/0001-ten-approved-decisions.md) distinguish working 0.1.0 behavior from proposed 1.0 contracts. The existing triggers are intentionally preserved. Structured Vitest suite provenance, full worker MCP tool parity, and expanded requirement review are **not yet qualified**.
@@ -63,4 +69,4 @@ The [Dope Codex phase runner](docs/runner.md) is a **developer-only** workflow. 
 npm run test:runner
 ```
 
-P1 implementation prompt files are not yet authored; do not run the phase runner or treat this documentation application as authorization to publish 1.0.
+P1–P10 implementation/closeout prompt files are authored but not executed, and their fixed versions are now superseded. Do not run them before migration/independent authorization, or treat this documentation application as authorization to publish 1.0.

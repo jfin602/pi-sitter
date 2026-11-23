@@ -19,8 +19,8 @@
 
 ## Development workflow and qualification
 
-- [Workflow](workflow.md), [Dope runner](runner.md), [stability contract](stability-contract.md).
-- [Owner-approved ADR](decisions/0001-ten-approved-decisions.md), [ADR index](decisions/README.md).
+- [Workflow](workflow.md), [versioning policy](VERSIONING.md), [Dope runner](runner.md), [stability contract](stability-contract.md).
+- [Owner-approved architecture ADR](decisions/0001-ten-approved-decisions.md), [change-driven versioning ADR](decisions/0002-change-driven-versioning.md), [ADR index](decisions/README.md).
 - [Task index](tasks/README.md), [P1 plan](tasks/p1/README.md), [P1 qualification ledger](tasks/p1/qualification/README.md).
 
 **Status discipline:** Proposed/approved documentation is not evidence of implemented features. See `BOOT.md` before making capability claims.
