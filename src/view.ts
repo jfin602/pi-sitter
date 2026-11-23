@@ -1,4 +1,7 @@
 import type { Trigger, PiSitterMode } from './core.ts';
+import { installedPiSitterVersion } from './test-discovery.ts';
+
+const VERSION = installedPiSitterVersion();
 
 export type PanelPhase = 'sleeping' | 'triggered' | 'streaming' | 'ready' | 'delivered' | 'abstained' | 'timeout' | 'error';
 
@@ -48,8 +51,8 @@ export class PiSitterView {
   toggle(): void { this.expanded = !this.expanded; }
 
   status(mode: PiSitterMode, count: number): string {
-    if (mode === 'off') return 'Pi Sitter off';
-    return `Pi Sitter ${mode} | ${this.phase} | ${count} trigger${count === 1 ? '' : 's'}`;
+    if (mode === 'off') return `Pi Sitter v${VERSION} off`;
+    return `Pi Sitter v${VERSION} ${mode} | ${this.phase} | ${count} trigger${count === 1 ? '' : 's'}`;
   }
 
   lines(stats: PanelStats): string[] | undefined {

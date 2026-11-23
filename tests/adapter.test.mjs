@@ -7,6 +7,7 @@ import { Container } from '@earendil-works/pi-tui';
 import { createPiSitter } from '../src/index.ts';
 import { piSitterLimits } from '../src/config.ts';
 import { PiSitterEngine, classifyObservation } from '../src/core.ts';
+import { installedPiSitterVersion } from '../src/test-discovery.ts';
 const validators = { '04': () => 'Saved configuration is incomplete' };
 
 const diagnosis = { issue: 'Preload path is invalid', evidence: 'Invalid preload at line 3',
@@ -138,7 +139,7 @@ test('verification and recovery cards keep stage and state on separate rows', ()
 
 test('footer status is compact and entirely themed as muted text', () => {
   const h = harness('active');
-  assert.equal(h.statuses.at(-1)[1], '<muted>Pi Sitter active | sleeping | 0 triggers</muted>');
+  assert.equal(h.statuses.at(-1)[1], `<muted>Pi Sitter v${installedPiSitterVersion()} active | sleeping | 0 triggers</muted>`);
 });
 
 test('completion text wraps within the available terminal width', () => {
@@ -624,7 +625,7 @@ test('Session switch aborts old diagnosis without writing into the new session',
   const lines = h.entryRenderers.get('pi-sitter-intervention')(interrupted, { expanded: false },
     { appearance: 'dark', style: text => text }).render(80);
   assert.match(lines.join(''), /Supervision ended before a result was recorded/);
-  assert.equal(h.statuses.at(-1)[1], '<muted>Pi Sitter active | sleeping | 1 trigger</muted>');
+  assert.equal(h.statuses.at(-1)[1], `<muted>Pi Sitter v${installedPiSitterVersion()} active | sleeping | 1 trigger</muted>`);
 });
 
 test('Late T3 advisory is recorded without requesting another Worker turn', async () => {
