@@ -24,7 +24,7 @@ test('Pi Sitter manifest stays on a historical p1 checkpoint or the owner milest
   const pkg = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
   assert.equal(pkg.name, 'pi-sitter');
   const plan = await livePlan();
-  const allowed = [roadmapVersionFor(plan, 0), ...plan.prompts.map(prompt => prompt.targetVersion), '0.2.0'];
+  const allowed = [roadmapVersionFor(plan, 0), ...plan.prompts.map(prompt => prompt.targetVersion), '0.2.0', '0.2.1'];
   assert.ok(allowed.includes(pkg.version), `unexpected package checkpoint ${pkg.version}`);
   assert.equal(pkg.pi.extensions[0], './src/index.ts');
   assert.equal(pkg.scripts['codex:phase'], 'node scripts/codex-phase.mjs');

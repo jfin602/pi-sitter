@@ -22,9 +22,10 @@ import { discoverProjectTestCommand, type TestDiscovery } from './test-discovery
 import { approvedPlanId, assessVerificationReadiness, configuredPlanId, testCommandNotice,
   type VerificationReadiness } from './verification-readiness.ts';
 import { InterventionLifecycle, type InterventionEvent } from './intervention-lifecycle.ts';
-import { buildWorkerDirective, conciseDiagnosticFailures, isInspectionLoop, triggerObservation, weakLoopAction,
+import { buildWorkerDirective, isInspectionLoop, triggerObservation, weakLoopAction,
   type DiagnosticEvidence } from './intervention-directive.ts';
 import { buildProjectDiagnosticPrompt } from './project-diagnostic-prompt.ts';
+import { diagnosticFinding, readableMarkdown, safeRawLines } from './diagnostic-presentation.ts';
 
 const STATUS_KEY = 'pi-sitter-status';
 const WIDGET_KEY = 'pi-sitter-panel';
@@ -64,7 +65,7 @@ export interface ProjectDiagnosticResult {
   passed: number;
   failed: number;
   total: number;
-  failures?: { id: string; detail: string }[];
+  failures?: { id: string; detail: string; expected?: string; observed?: string; path?: string }[];
   reason?: string;
 }
 type ProjectDiagnosticCard = ProjectDiagnosticResult & {
@@ -73,6 +74,14 @@ type ProjectDiagnosticCard = ProjectDiagnosticResult & {
   displayId?: string;
   workerPrompt?: string;
   previousWorkerPrompt?: string;
+  followupPending?: boolean;
+  followup?: ProjectDiagnosticResult;
+  workerProgressObserved?: boolean;
+  guidanceReceived?: boolean;
+  guidanceDeliveryFailed?: boolean;
+  rawResult?: ProjectDiagnosticResult;
+  rawFollowup?: ProjectDiagnosticResult;
+  followupProgressVersion?: number;
 };
 type RecoveryEntry = { attempt: number; plan: RecoveryPlan; delivery: string; retry?: number; displayId?: string };
 type RecoveryRequest = { id: string; stage: string; reset: boolean; unavailable?: string };
@@ -116,7 +125,8 @@ function supervisorCard(theme: Theme, card: SupervisorCard, width: number): stri
     ...(card.details?.length ? [{ text: '' }, ...card.details.map(text => ({ text: ` ${text}` }))] : []),
     ...(card.hint ? [{ text: '' }, { text: ` ${card.hint}`, kind: 'hint' as const }] : []),
   ];
-  const wrapped = rows.flatMap(row => row.text.split('\n').flatMap(text => {
+  const wrapped = rows.flatMap(row => row.text.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g,
+    char => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`).split('\n').flatMap(text => {
     const parts: typeof rows = [];
     let chars = Array.from(text);
     while (chars.length > width) {
@@ -136,13 +146,6 @@ function supervisorCard(theme: Theme, card: SupervisorCard, width: number): stri
       bg, bold: row.kind === 'title' || row.kind === 'status',
     });
   }), spacer];
-}
-
-function quotedText(value: string): string[] {
-  // Rejected model text has not passed field validation; render control bytes visibly.
-  const safe = value.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g,
-    char => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`);
-  return safe.split('\n').map(line => `> ${line}`);
 }
 
 interface OutcomeEntry {
@@ -229,7 +232,10 @@ function boundedProjectDiagnostic(value: ProjectDiagnosticResult): ProjectDiagno
       Number(/\b(?:missing|saved|container|script=|root=|not found|does not exist)/i.test(b.detail)) -
       Number(/\b(?:missing|saved|container|script=|root=|not found|does not exist)/i.test(a.detail)))
       .slice(0, 20).map(row => ({
-      id: String(row.id).slice(0, 160), detail: String(row.detail).slice(0, 600) })) : [],
+      id: String(row.id).slice(0, 160), detail: String(row.detail).slice(0, 600),
+      ...(typeof row.expected === 'string' ? { expected: row.expected.slice(0, 4096) } : {}),
+      ...(typeof row.observed === 'string' ? { observed: row.observed.slice(0, 4096) } : {}),
+      ...(typeof row.path === 'string' ? { path: row.path.slice(0, 4096) } : {}) })) : [],
     reason: typeof value.reason === 'string' ? value.reason.slice(0, 800) : undefined };
 }
 
@@ -269,6 +275,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     const verificationCards = new Map<string, CompletionRecord | 'interrupted' | undefined>();
     const diagnosticCards = new Map<string, ProjectDiagnosticCard | 'interrupted' | undefined>();
     let pendingDiagnosticId: string | undefined;
+    let activeDiagnosticId: string | undefined;
     let pendingVerificationId: string | undefined;
     const recoveryCards = new Map<string, RecoveryEntry | 'interrupted' | undefined>();
     let recoveryPlan: RecoveryPlan | undefined;
@@ -299,6 +306,11 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     let workerRecoveries = 0;
     let confirmedDeliveries = 0;
     const awaitingContext = new Set<string>();
+    const contextInterventionIds = new Map<string, string>();
+    const receivedInterventions = new Set<string>();
+    const failedInterventions = new Set<string>();
+    const actedInterventions = new Set<string>();
+    let lastAdviceInterventionId: string | undefined;
     let lastAdviceEpoch: number | undefined;
     let lastAdviceTool: string | undefined;
     let lastAdviceOperation: string | undefined;
@@ -328,6 +340,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       emptyFinalTerminalIssued = false;
       unavailableAtCompletionIssued = false;
       projectDiagnosticRetryIssued = false;
+      activeDiagnosticId = undefined;
       lastProjectDiagnosticPrompt = undefined;
       lastDiagnostic = undefined;
       handledEmptyFinalMessages.clear();
@@ -875,35 +888,82 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     });
     function diagnosticCard(getState: () => ProjectDiagnosticCard | 'interrupted' | undefined,
       stage: string, isRunning: () => boolean, expanded: boolean, theme: Theme) {
-      let open = expanded;
+      let detailMode: 'closed' | 'formatted' | 'raw' = expanded ? 'formatted' : 'closed';
+      let detailOffset = 0;
+      let technicalLength = 0;
       return { render(width: number) {
         const result = getState();
         if (!result || result === 'interrupted') return supervisorCard(theme, { stage,
-          status: isRunning() ? 'DIAGNOSTIC RUNNING' : 'DIAGNOSTIC INTERRUPTED',
+          status: isRunning() ? 'ANALYZING' : 'INTERRUPTED',
           summary: isRunning() ? 'Checking the saved project…' : 'Diagnostic ended before a result was returned',
           tone: isRunning() ? 'pending' : 'failure',
         }, width);
-        const label = result.suite ? `${result.suite}: ` : '';
+        const finding = result.failures?.[0] ? diagnosticFinding(result.failures[0]) : undefined;
         const prompt = result.workerPrompt ?? result.previousWorkerPrompt;
-        const hasMore = !!prompt || !!result.failures?.length;
+        const final = result.followup;
+        const status = result.followupPending ? 'CHECKING REPAIR' : final?.status === 'PASS' ?
+          'RESOLVED BY HOST DIAGNOSTIC' : final?.status === 'FAIL' ? 'STILL FAILING' :
+          final?.status === 'BLOCKED' ? 'OUTCOME UNKNOWN' : result.status === 'PASS' ?
+          'DIAGNOSTIC PASS' : result.status === 'BLOCKED' ? 'DIAGNOSTIC BLOCKED' :
+          result.workerPrompt ? result.guidanceDeliveryFailed ? 'INTERVENTION FAILED' :
+            result.guidanceReceived ? 'GUIDANCE RECEIVED — REPAIR NOT YET VERIFIED' :
+            'GUIDANCE SUPPLIED — DELIVERY PENDING' : 'DIAGNOSIS READY';
+        const current = final ?? result;
+        const progress = current.total ? `${current.passed}/${current.total} passed` : 'Verification unavailable';
+        const bar = current.total ? `${'■'.repeat(Math.min(10, Math.round(10 * current.passed / current.total)))}${'·'.repeat(10 - Math.min(10, Math.round(10 * current.passed / current.total)))}` : '';
+        const technical = [
+          `Diagnostic source: ${result.suite ?? 'host project diagnostic'}; stage ${result.stage}`,
+          `Initial status: ${result.status}; ${result.passed}/${result.total} passed; ${result.failed} failed`,
+          ...((result.rawResult?.failures ?? result.failures ?? []).flatMap(row => [`${row.id}:`, ...
+            (detailMode === 'raw' ? safeRawLines(row.detail) : readableMarkdown(row.detail)),
+            ...(row.path ? [`Path: ${row.path}`] : []),
+            ...(row.expected !== undefined && row.observed !== undefined ?
+              [`Expected: ${row.expected}`, `Observed: ${row.observed}`] : [])])),
+          ...((result.rawResult?.reason ?? result.reason) ? [`Host reason: ${result.rawResult?.reason ?? result.reason}`] : []),
+          ...(prompt ? [result.workerPrompt ? 'Full prompt supplied to Worker after this diagnostic:' :
+            'Full prompt supplied to Worker after the previous diagnostic (none sent after this result):',
+            ...(detailMode === 'raw' ? safeRawLines(prompt) : readableMarkdown(prompt))] : []),
+          ...(final ? [`Follow-up diagnostic: ${final.status}; ${final.passed}/${final.total} passed; ${final.failed} failed`,
+            ...(result.rawFollowup?.failures ?? final.failures ?? []).flatMap(row => [`${row.id}: ${row.detail}`]),
+            ...((result.rawFollowup?.reason ?? final.reason) ? [`Follow-up reason: ${result.rawFollowup?.reason ?? final.reason}`] : [])] : []),
+          ...(result.workerPrompt ? [`Worker activity: ${final ? 'continued' : 'awaiting follow-up'}; saved progress: ${result.workerProgressObserved ? 'observed' : 'not observed'}`] : []),
+        ];
+        technicalLength = technical.length;
+        const visible = technical.slice(detailOffset, detailOffset + 32);
+        const heading = finding?.title ?? (result.status === 'BLOCKED' ? 'Host diagnostic unavailable' :
+          result.status === 'PASS' ? 'Saved project checks passed' : 'Host diagnostic failed');
         return supervisorCard(theme, { stage: result.stage,
-          status: `DIAGNOSTIC ${result.status}`,
-          summary: result.status === 'BLOCKED' ? `${label}${result.reason ?? 'Test diagnostic could not run'}` :
-            `${label}${result.passed}/${result.total} tests passed. This result guides repair; it does not certify completion.`,
-          details: open ? [
-            ...conciseDiagnosticFailures(result.failures ?? [], 12),
-            ...(prompt ? [result.workerPrompt ? 'Full prompt supplied to Worker after this diagnostic:' :
-              'Full prompt supplied to Worker after the previous diagnostic (none sent after this result):',
-              ...quotedText(prompt)] : []),
-          ] : [],
-          hint: hasMore ? `Click to show ${open ? 'less' : 'more'}` : undefined,
-          tone: result.status === 'PASS' ? 'normal' : 'failure',
+          status,
+          summary: `${progress}${bar ? `  ${bar}` : ''}\n${heading}`,
+          details: [
+            ...(finding ? [`${finding.id}${finding.path ? `  ${finding.path}` : ''}`,
+              finding.explanation,
+              ...(finding.expected !== undefined && finding.observed !== undefined ?
+                [`Expected: ${finding.expected}`, `Observed: ${finding.observed}`] : [])] :
+              result.reason ? [result.reason] : []),
+            ...(result.workerPrompt ? ['Recommended repair: inspect the reported saved-state mismatch, make a supported in-place repair, then read it back.'] : []),
+            ...(result.workerPrompt ? [`Guidance ${result.guidanceReceived ? 'received by' : 'supplied to'} Worker; ${final ?
+              result.workerProgressObserved ? 'saved progress observed' : 'Worker continued; saved progress not observed' :
+              'repair not yet verified'}.`] : []),
+            ...(detailMode !== 'closed' ? ['Technical details and worker instructions', ...visible,
+              ...(technical.length > detailOffset + 32 ? [`${technical.length - detailOffset - 32} more lines; scroll down for next page`] : [])] : []),
+          ],
+          hint: `Technical details and worker instructions — ${detailMode === 'closed' ? 'click to expand' :
+            detailMode === 'formatted' ? 'formatted; click for raw source' : 'raw source; click to collapse'}`,
+          tone: result.followupPending ? 'pending' : final?.status === 'PASS' || result.status === 'PASS' ? 'normal' :
+            status === 'OUTCOME UNKNOWN' || status === 'DIAGNOSIS READY' || status.startsWith('GUIDANCE') ? 'recovery' : 'failure',
         }, width);
-      }, invalidate() {}, handleMouse(event: { type: string; button?: string }) {
+      }, invalidate() {}, handleMouse(event: { type: string; button?: string; wheelDelta?: number }) {
         const result = getState();
-        if (event.type !== 'click' || event.button !== 'left' || !result || result === 'interrupted' ||
-            (!result.workerPrompt && !result.previousWorkerPrompt && !result.failures?.length)) return;
-        open = !open;
+        if (!result || result === 'interrupted') return;
+        if (event.type === 'wheel' && detailMode !== 'closed') {
+          detailOffset = Math.max(0, Math.min(Math.max(0, technicalLength - 32),
+            detailOffset + (event.wheelDelta ?? 0)));
+          return { handled: true };
+        }
+        if (event.type !== 'click' || event.button !== 'left') return;
+        detailMode = detailMode === 'closed' ? 'formatted' : detailMode === 'formatted' ? 'raw' : 'closed';
+        detailOffset = 0;
         return { handled: true };
       } };
     }
@@ -946,12 +1006,15 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
             open && state.workerPrompt ? 'Worker directive (expanded below)' :
               state.workerPrompt?.split('\n')[1] ?? state.nextAction ?? state.issue ?? state.reason ?? 'No diagnosis returned';
         return supervisorCard(theme, { stage: state.stage,
-          status: pending ? 'INVESTIGATING' : state.phase === 'completed' ?
-            state.delivered ? 'GUIDANCE' : 'DIAGNOSED' : state.phase.toUpperCase(),
+          status: pending ? 'ANALYZING' : state.phase === 'completed' ?
+            state.delivered ? failedInterventions.has(state.id) ? 'INTERVENTION FAILED' :
+              actedInterventions.has(state.id) ? 'WORKER ACTED — REPAIR UNVERIFIED' :
+              receivedInterventions.has(state.id) ? 'GUIDANCE RECEIVED — REPAIR UNVERIFIED' :
+              'GUIDANCE SUPPLIED — DELIVERY PENDING' : 'DIAGNOSIS READY' : state.phase.toUpperCase(),
           summary,
           details: !pending ? [
             !open && state.workerPrompt?.split('\n').find(line => line.startsWith('Next: ')),
-            ...(open && state.workerPrompt ? ['Full prompt supplied to Worker:', ...quotedText(state.workerPrompt)] : []),
+            ...(open && state.workerPrompt ? ['Full prompt supplied to Worker:', ...readableMarkdown(state.workerPrompt)] : []),
             open && state.issue && `Issue: ${state.issue}`,
             open && state.evidence && `Evidence: ${state.evidence}`,
             open && state.confidence !== undefined && `Confidence: ${state.confidence.toFixed(2)}`,
@@ -960,10 +1023,12 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
             open && `Trigger: ${state.trigger.split(':')[0]}`,
             open && state.reason && `Outcome: ${state.reason}`,
             ...(open ? (state.rejectedResponses ?? []).flatMap((response, index) =>
-              [`Rejected supervisor response ${index + 1} (not sent to Worker):`, ...quotedText(response)]) : [])]
+              [`Rejected supervisor response ${index + 1} (not sent to Worker):`, ...readableMarkdown(response)]) : [])]
             .filter((value): value is string => !!value) : [],
           hint: hasMore ? `Click to show ${open ? 'less' : 'more'}` : undefined,
-          tone: pending || state.phase === 'cancelled' ? 'pending' : state.phase === 'failed' ? 'failure' : 'normal',
+          tone: pending || state.phase === 'cancelled' ? 'pending' :
+            state.phase === 'failed' || failedInterventions.has(state.id) ? 'failure' :
+            state.delivered ? 'recovery' : 'normal',
         }, width);
       }, invalidate() {}, handleMouse(event) {
         const state = interventions.get(saved.id) ?? saved;
@@ -1120,6 +1185,8 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         terminating.clear();
         adviceKeys.clear();
         interventions.clear();
+        receivedInterventions.clear(); failedInterventions.clear(); actedInterventions.clear();
+        contextInterventionIds.clear(); lastAdviceInterventionId = undefined;
         workerToolNames.length = 0;
         pending = undefined;
         controller = undefined;
@@ -1132,6 +1199,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         verificationCards.clear();
         pendingVerificationId = undefined;
         diagnosticCards.clear();
+        activeDiagnosticId = undefined;
         pendingDiagnosticId = undefined;
         recoveryCards.clear();
         recoveryPlan = undefined;
@@ -1193,19 +1261,36 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
               (entry.data as { stage?: string }).stage === stage) projectDiagnosticRetryIssued = true;
           if (entry.customType === PROJECT_DIAGNOSTIC_TYPE && entry.data && typeof entry.data === 'object') {
             const saved = entry.data as ProjectDiagnosticCard;
-            if (saved.stage === stage && saved.displayId) diagnosticCards.set(saved.displayId, saved);
+            if (saved.stage === stage && saved.displayId) {
+              diagnosticCards.set(saved.displayId, saved);
+              activeDiagnosticId = saved.displayId;
+            }
             if (saved.stage === stage && saved.workerPrompt) lastProjectDiagnosticPrompt = saved.workerPrompt;
-            if (saved.stage === stage && saved.status === 'FAIL') lastDiagnostic = { stage,
-              failed: saved.failed, total: saved.total, failures: saved.failures ?? [],
-              progressVersion: saved.progressVersion ?? -1 };
+            if (saved.stage === stage) {
+              const latest = saved.followup ?? saved;
+              lastDiagnostic = latest.status === 'FAIL' ? { stage,
+                failed: latest.failed, total: latest.total, failures: latest.failures ?? [],
+                progressVersion: saved.followup ? saved.followupProgressVersion ?? -1 : saved.progressVersion ?? -1 } : undefined;
+            }
           }
           if (entry.customType === INTERVENTION_TYPE && entry.data && typeof entry.data === 'object')
             interventions.apply(entry.data as InterventionEvent);
           if (entry.customType === EVENT_TYPE && entry.data && typeof entry.data === 'object') engine.restoreTrigger(entry.data as Trigger);
           if (entry.customType === CALL_TYPE) calls++;
-          if (entry.customType === DELIVERY_CONFIRM_TYPE) confirmedDeliveries++;
-          if (entry.customType === DELIVERY_FAILURE_TYPE) failedDeliveries++;
-          if (entry.customType === WORKER_RECOVERY_TYPE) workerRecoveries++;
+          if (entry.customType === DELIVERY_CONFIRM_TYPE) {
+            confirmedDeliveries++;
+            const id = (entry.data as { interventionId?: string } | undefined)?.interventionId;
+            if (id) receivedInterventions.add(id);
+          }
+          if (entry.customType === DELIVERY_FAILURE_TYPE) {
+            failedDeliveries++;
+            for (const id of (entry.data as { interventionIds?: string[] } | undefined)?.interventionIds ?? []) failedInterventions.add(id);
+          }
+          if (entry.customType === WORKER_RECOVERY_TYPE) {
+            workerRecoveries++;
+            const id = (entry.data as { interventionId?: string } | undefined)?.interventionId;
+            if (id) actedInterventions.add(id);
+          }
           if (entry.customType === ANALYSIS_TYPE && entry.data && typeof entry.data === 'object') {
             const saved = entry.data as AnalysisOutcome;
             completionDiagnosisCalls += Math.min(1, saved.calls ?? 0);
@@ -1275,6 +1360,12 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           }
         }
         interventions.interruptPending('Supervision ended before a result was recorded');
+        for (const [id, state] of diagnosticCards) {
+          if (state && state !== 'interrupted' && state.followupPending)
+            diagnosticCards.set(id, { ...state, followupPending: false,
+              followup: { status: 'BLOCKED', passed: 0, failed: 0, total: 0,
+                reason: 'Follow-up diagnostic interrupted before a result was recorded' } });
+        }
         for (const [id, state] of verificationCards) if (!state) verificationCards.set(id, 'interrupted');
         for (const [id, state] of recoveryCards) if (!state) recoveryCards.set(id, 'interrupted');
         const supplied = dependencies.loadControllerContext?.(stage, ctx.cwd);
@@ -1420,7 +1511,9 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         if (lastAdviceEpoch !== undefined && classification.kind === 'PROGRESS' &&
             event.toolName === lastAdviceTool && engine.progressVersion > lastAdviceEpoch) {
           workerRecoveries++;
-          try { pi.appendEntry(WORKER_RECOVERY_TYPE, { tool: event.toolName, progressVersion: engine.progressVersion }); }
+          if (lastAdviceInterventionId) actedInterventions.add(lastAdviceInterventionId);
+          try { pi.appendEntry(WORKER_RECOVERY_TYPE, { tool: event.toolName, progressVersion: engine.progressVersion,
+            interventionId: lastAdviceInterventionId }); }
           catch { /* Observation is best effort. */ }
           lastAdviceEpoch = undefined;
           lastAdviceTool = undefined;
@@ -1446,11 +1539,23 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
 
     pi.on('context', event => {
       for (const message of event.messages) {
+        if (message.role === 'custom' && message.customType === PROJECT_DIAGNOSTIC_RETRY_TYPE &&
+            typeof message.content === 'string' && activeDiagnosticId) {
+          const card = diagnosticCards.get(activeDiagnosticId);
+          if (card && card !== 'interrupted' && card.workerPrompt === message.content && !card.guidanceReceived) {
+            diagnosticCards.set(activeDiagnosticId, { ...card, guidanceReceived: true });
+            try { pi.appendEntry(PROJECT_DIAGNOSTIC_TYPE, { ...card, guidanceReceived: true }); }
+            catch { /* Receipt is best effort. */ }
+          }
+        }
         if (message.role !== 'custom' || message.customType !== ADVISORY_TYPE ||
             typeof message.content !== 'string' || !awaitingContext.has(message.content)) continue;
         awaitingContext.delete(message.content);
+        const interventionId = contextInterventionIds.get(message.content);
+        contextInterventionIds.delete(message.content);
+        if (interventionId) receivedInterventions.add(interventionId);
         confirmedDeliveries++;
-        try { pi.appendEntry(DELIVERY_CONFIRM_TYPE, { stage: engine.stage, confirmed: true }); }
+        try { pi.appendEntry(DELIVERY_CONFIRM_TYPE, { stage: engine.stage, confirmed: true, interventionId }); }
         catch { /* Context confirmation remains best effort. */ }
       }
     });
@@ -1458,9 +1563,12 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     pi.on('agent_settled', (_event, ctx) => {
       if (!awaitingContext.size) return;
       failedDeliveries += awaitingContext.size;
-      try { pi.appendEntry(DELIVERY_FAILURE_TYPE, { stage: engine.stage, count: awaitingContext.size }); }
+      const interventionIds = [...awaitingContext].map(content => contextInterventionIds.get(content)).filter((id): id is string => !!id);
+      for (const id of interventionIds) failedInterventions.add(id);
+      try { pi.appendEntry(DELIVERY_FAILURE_TYPE, { stage: engine.stage, count: awaitingContext.size, interventionIds }); }
       catch { /* Failure remains visible in status. */ }
       awaitingContext.clear();
+      contextInterventionIds.clear();
       view.finish('error', 'Advisory was committed but no following model context was observed');
       render(ctx);
     });
@@ -1541,6 +1649,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         if (source === 'fallback') fallbackAdvisories++;
         else modelAdvisories++;
         lastAdviceEpoch = engine.progressVersion;
+        lastAdviceInterventionId = interventionId;
         lastAdviceTool = trigger.tool;
         const advisedOperation = triggerObservation(trigger, engine.recent);
         lastAdviceOperation = advisedOperation ? advisedOperation.operationKey ??
@@ -1556,6 +1665,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         finishIntervention(interventionId, trigger, 'completed', outcome, source, true, content);
         try { recordOutcome(trigger, outcome, 'delivered', source, interventionId); render(ctx); } catch { /* Metadata is best effort. */ }
         awaitingContext.add(content);
+        contextInterventionIds.set(content, interventionId);
         return { entries: [...event.entries, { type: 'custom_message' as const,
           customType: ADVISORY_TYPE, content, display: false } ] };
       } catch (error) {
@@ -1598,16 +1708,27 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       const current = new AbortController();
       projectDiagnosticController = current;
       const sessionId = engine.sessionId;
-      const displayId = randomUUID();
+      const prior = activeDiagnosticId && diagnosticCards.get(activeDiagnosticId);
+      const followupCard = prior && prior !== 'interrupted' && prior.workerPrompt ? prior : undefined;
+      const displayId = followupCard ? activeDiagnosticId! : randomUUID();
+      if (!followupCard) activeDiagnosticId = displayId;
       pendingDiagnosticId = displayId;
-      pi.appendEntry(PROJECT_DIAGNOSTIC_PENDING_TYPE, { id: displayId, stage: engine.stage });
+      if (followupCard) {
+        const pendingCard = { ...followupCard, followupPending: true };
+        diagnosticCards.set(displayId, pendingCard);
+        pi.appendEntry(PROJECT_DIAGNOSTIC_TYPE, pendingCard);
+      }
+      else pi.appendEntry(PROJECT_DIAGNOSTIC_PENDING_TYPE, { id: displayId, stage: engine.stage });
       if (ctx.hasUI) {
         ctx.ui.setWorkingMessage('Pi Sitter checking saved project…');
         ctx.ui.setWorkingVisible(true);
       }
       let result: ProjectDiagnosticResult;
+      let rawResult: ProjectDiagnosticResult | undefined;
       try {
-        result = boundedProjectDiagnostic(await dependencies.projectDiagnostic(engine.stage, ctx.cwd, current.signal));
+        const candidate = await dependencies.projectDiagnostic(engine.stage, ctx.cwd, current.signal);
+        result = boundedProjectDiagnostic(candidate);
+        rawResult = candidate;
       } catch (error) {
         result = { status: 'BLOCKED', passed: 0, failed: 0, total: 0,
           reason: error instanceof Error ? error.message.slice(0, 800) : 'Host diagnostic failed' };
@@ -1615,9 +1736,12 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         if (projectDiagnosticController === current) projectDiagnosticController = undefined;
       }
       if (current.signal.aborted || engine.sessionId !== sessionId) {
-        diagnosticCards.set(displayId, 'interrupted');
-        if (pendingDiagnosticId === displayId) pendingDiagnosticId = undefined;
-        if (ctx.hasUI) ctx.ui.setWorkingMessage();
+        if (engine.sessionId === sessionId) {
+          diagnosticCards.set(displayId, followupCard ? { ...followupCard, followupPending: false,
+            followup: { status: 'BLOCKED', passed: 0, failed: 0, total: 0, reason: 'Follow-up diagnostic interrupted' } } : 'interrupted');
+          if (pendingDiagnosticId === displayId) pendingDiagnosticId = undefined;
+          if (ctx.hasUI) ctx.ui.setWorkingMessage();
+        }
         return;
       }
       lastDiagnostic = result.status === 'FAIL' ? { stage: engine.stage, failed: result.failed, total: result.total,
@@ -1627,9 +1751,12 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         projectDiagnosticRetryIssued = true;
         prompt = buildProjectDiagnosticPrompt(result, engine.task);
       }
-      const card: ProjectDiagnosticCard = { stage: engine.stage, ...result,
-        progressVersion: engine.progressVersion, displayId, workerPrompt: prompt,
-        previousWorkerPrompt: prompt ? undefined : lastProjectDiagnosticPrompt };
+      const card: ProjectDiagnosticCard = followupCard ? { ...followupCard, followupPending: false,
+        followup: result, rawFollowup: rawResult, followupProgressVersion: engine.progressVersion,
+        workerProgressObserved: engine.progressVersion > (followupCard.progressVersion ?? engine.progressVersion) } :
+        { stage: engine.stage, ...result, rawResult,
+          progressVersion: engine.progressVersion, displayId, workerPrompt: prompt,
+          previousWorkerPrompt: prompt ? undefined : lastProjectDiagnosticPrompt };
       diagnosticCards.set(displayId, card);
       pendingDiagnosticId = undefined;
       if (ctx.hasUI) ctx.ui.setWorkingMessage();
@@ -1804,8 +1931,21 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
 
     pi.on('agent_settled', (_event, ctx) => {
       if (pendingDiagnosticId) {
-        diagnosticCards.set(pendingDiagnosticId, 'interrupted');
+        const currentCard = diagnosticCards.get(pendingDiagnosticId);
+        diagnosticCards.set(pendingDiagnosticId, currentCard && currentCard !== 'interrupted' ?
+          { ...currentCard, followupPending: false,
+            followup: { status: 'BLOCKED', passed: 0, failed: 0, total: 0,
+              reason: 'Follow-up diagnostic interrupted before a result was recorded' } } : 'interrupted');
         pendingDiagnosticId = undefined;
+      }
+      if (activeDiagnosticId) {
+        const card = diagnosticCards.get(activeDiagnosticId);
+        if (card && card !== 'interrupted' && card.workerPrompt && !card.guidanceReceived && !card.followup) {
+          const failedCard = { ...card, guidanceDeliveryFailed: true };
+          diagnosticCards.set(activeDiagnosticId, failedCard);
+          try { pi.appendEntry(PROJECT_DIAGNOSTIC_TYPE, failedCard); }
+          catch { /* Display failure cannot change Worker control. */ }
+        }
       }
       if (pendingVerificationId) {
         verificationCards.set(pendingVerificationId, 'interrupted');
@@ -1837,6 +1977,8 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         terminating.clear();
         adviceKeys.clear();
         interventions.clear();
+        receivedInterventions.clear(); failedInterventions.clear(); actedInterventions.clear();
+        contextInterventionIds.clear(); lastAdviceInterventionId = undefined;
         workerToolNames.length = 0;
         controller = undefined;
         verificationController = undefined;
@@ -1846,6 +1988,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         verificationCards.clear();
         pendingVerificationId = undefined;
         diagnosticCards.clear();
+        activeDiagnosticId = undefined;
         pendingDiagnosticId = undefined;
         recoveryCards.clear();
         recoveryPlan = undefined;

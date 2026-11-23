@@ -212,7 +212,8 @@ test('native Pi uses host diagnostic failure for one repair continuation and rer
     assert.match(JSON.stringify(h.seen.requests[1]), /Expected a main scene/);
     assert.match(JSON.stringify(h.seen.requests[1]), /You must carry out the original task's requested source repair now/);
     assert.match(JSON.stringify(h.seen.requests[1]), /Do not end with only a diagnosis, a plan, or a promise to inspect later/);
-    assert.deepEqual(entries(h.session, 'pi-sitter-project-diagnostic').map(row => row.data.status), ['FAIL', 'PASS']);
+    assert.equal(entries(h.session, 'pi-sitter-project-diagnostic-pending').length, 1);
+    assert.equal(entries(h.session, 'pi-sitter-project-diagnostic').at(-1).data.followup.status, 'PASS');
     assert.equal(entries(h.session, 'pi-sitter-project-diagnostic-retry').length, 1);
     assert.equal(entries(h.session, 'pi-sitter-verification-attempt').length, 0);
     assert.equal(entries(h.session, 'pi-sitter-verification-pending').filter(row => row.data.unavailable).length, 0);
@@ -239,6 +240,41 @@ test('native Pi repeated host diagnostic failure stops after one repair continua
   } finally { await h.close(); }
 });
 
+test('Stage 04 50/51 diagnostic becomes one verified host outcome card without rewriting its evidence', async () => {
+  const detail = 'AssertionError: Meteor root verification failed\n> expected saved root Node2D\n```gdscript\n> literal code\n```\n' +
+    Array.from({ length: 45 }, (_, i) => `trace ${i}`).join('\n');
+  const failure = { status: 'FAIL', suite: 'meteor-dodge-v1', passed: 50, failed: 1, total: 51,
+    failures: [{ id: 'MD-METEOR-ROOT', detail, path: 'scenes/meteor.tscn',
+      expected: 'Node2D', observed: 'Area2D' }] };
+  const h = await nativeSession({ responses: [fauxAssistantMessage('First report.'), fauxAssistantMessage('Repair report.')],
+    diagnostics: [failure, { status: 'PASS', suite: 'meteor-dodge-v1', passed: 51, failed: 0, total: 51 }] });
+  try {
+    await h.session._startRun({ messageType: 'user', prompt: 'Finish Stage 04' });
+    assert.equal(entries(h.session, 'pi-sitter-project-diagnostic-pending').length, 1);
+    const saved = entries(h.session, 'pi-sitter-project-diagnostic').at(-1).data;
+    assert.equal(saved.followup.status, 'PASS');
+    assert.equal(saved.rawResult.failures[0].detail, detail);
+    assert.equal(saved.guidanceReceived, true);
+    const pending = entries(h.session, 'pi-sitter-project-diagnostic-pending')[0];
+    const renderer = h.session.extensionRunner.getEntryRenderer('pi-sitter-project-diagnostic-pending');
+    const theme = { appearance: 'dark', style: text => text };
+    const card = renderer(pending, { expanded: false }, theme);
+    const summary = card.render(52).join('\n');
+    assert.match(summary, /RESOLVED BY HOST DIAGNOSTIC/);
+    assert.match(summary, /51\/51 passed/);
+    assert.match(summary, /MD-METEOR-ROOT/);
+    assert.match(summary, /Expected: Node2D/);
+    assert.match(summary, /Observed: Area2D/);
+    assert.ok(card.render(52).every(line => Array.from(line).length === 52));
+    card.handleMouse({ type: 'click', button: 'left' });
+    assert.match(card.render(80).join('\n'), /│ expected saved root Node2D/);
+    card.handleMouse({ type: 'click', button: 'left' });
+    assert.match(card.render(80).join('\n'), /> expected saved root Node2D/);
+    assert.deepEqual(card.handleMouse({ type: 'wheel', button: 'none', wheelDelta: 32 }), { handled: true });
+    assert.match(card.render(80).join('\n'), /trace 30/);
+  } finally { await h.close(); }
+});
+
 test('host diagnostic shows pending immediately and discloses the exact repair prompt on both result cards', async () => {
   const gates = [];
   const deferred = () => new Promise(resolve => { gates.push(resolve); });
@@ -258,7 +294,7 @@ test('host diagnostic shows pending immediately and discloses the exact repair p
     const styles = [];
     const theme = { appearance: 'dark', style(text, options) { styles.push(options); return text; } };
     const first = renderer(pending[0], { expanded: false }, theme);
-    assert.match(first.render(100).join('\n'), /DIAGNOSTIC RUNNING/);
+    assert.match(first.render(100).join('\n'), /ANALYZING/);
     assert.ok(styles.every(style => style.bg.r === 55 && style.bg.g === 55 && style.bg.b === 55));
     gates[0](failure);
     for (let i = 0; i < 100 && h.seen.diagnostics < 2; i++) await new Promise(setImmediate);
@@ -270,25 +306,25 @@ test('host diagnostic shows pending immediately and discloses the exact repair p
     assert.ok(JSON.stringify(h.seen.requests[1]).includes(JSON.stringify(sent).slice(1, -1)));
     assert.match(sent.split('\n')[0], /1\/1 checks failed/);
     assert.match(sent.split('\n')[1], /Start with reported observation.*save it, and read it back/);
-    assert.match(first.render(100).join('\n'), /Click to show more/);
+    assert.match(first.render(100).join('\n'), /click to expand/);
     assert.deepEqual(first.handleMouse({ type: 'click', button: 'left' }), { handled: true });
     assert.match(first.render(100).join('\n'), /Full prompt supplied to Worker after this diagnostic/);
     assert.match(first.render(100).join('\n'), /You must carry out the original task's requested source repair now/);
-    const secondPending = entries(h.session, 'pi-sitter-project-diagnostic-pending')[1];
-    assert.match(renderer(secondPending, { expanded: false }, theme).render(100).join('\n'), /DIAGNOSTIC RUNNING/);
+    assert.equal(entries(h.session, 'pi-sitter-project-diagnostic-pending').length, 1);
+    assert.match(first.render(100).join('\n'), /CHECKING REPAIR/);
     gates[1](failure);
     await run;
-    const secondResult = entries(h.session, 'pi-sitter-project-diagnostic')[1].data;
-    assert.equal(secondResult.workerPrompt, undefined);
-    assert.equal(secondResult.previousWorkerPrompt, sent);
-    const finalCard = renderer(secondPending, { expanded: false }, theme);
-    assert.match(finalCard.render(100).join('\n'), /Click to show more/);
+    const secondResult = entries(h.session, 'pi-sitter-project-diagnostic').at(-1).data;
+    assert.equal(secondResult.workerPrompt, sent);
+    assert.equal(secondResult.followup.status, 'FAIL');
+    const finalCard = renderer(pending[0], { expanded: false }, theme);
+    assert.match(finalCard.render(100).join('\n'), /STILL FAILING/);
     finalCard.handleMouse({ type: 'click', button: 'left' });
-    assert.match(finalCard.render(100).join('\n'), /previous diagnostic \(none sent after this result\)/);
+    assert.match(finalCard.render(100).join('\n'), /Full prompt supplied to Worker after this diagnostic/);
     assert.match(finalCard.render(100).join('\n'), /You must carry out the original task's requested source repair now/);
     await h.session.extensionRunner.emit({ type: 'session_start', reason: 'resume' });
-    const replayed = renderer(secondPending, { expanded: true }, theme).render(100).join('\n');
-    assert.match(replayed, /previous diagnostic \(none sent after this result\)/);
+    const replayed = renderer(pending[0], { expanded: true }, theme).render(100).join('\n');
+    assert.match(replayed, /Full prompt supplied to Worker after this diagnostic/);
     assert.match(replayed, /You must carry out the original task's requested source repair now/);
   } finally {
     for (const resolve of gates) resolve(failure);

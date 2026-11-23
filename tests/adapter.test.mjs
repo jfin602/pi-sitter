@@ -184,7 +184,7 @@ test('Shadow records one outcome without opening the panel or injecting', async 
   assert.match(h.notices.at(-1)[0], /inference 1\/3;.*delivered 0;.*failed 0; budget 2; tokens 100\/40/);
 });
 
-test('accepted intervention renders muted immediately and completes the same purple card after a 10-second diagnosis', async () => {
+test('accepted intervention renders muted immediately and completes the same warning card after a 10-second diagnosis', async () => {
   let finished = false;
   const h = harness('active', async () => {
     await new Promise(resolve => setTimeout(resolve, 10_000));
@@ -228,8 +228,9 @@ test('accepted intervention renders muted immediately and completes the same pur
   assert.equal(click?.handled, true);
   const opened = clickable.render(80).join('\n');
   assert.match(opened, /Full prompt supplied to Worker/);
-  assert.match(opened, /> \[Pi Sitter intervention — extension generated/);
-  assert.match(opened, /> Next: Fix the preload string/);
+  assert.match(opened, /\[Pi Sitter intervention — extension generated/);
+  assert.match(opened, /Next: Fix the preload string/);
+  assert.doesNotMatch(opened, /^ > /m);
   assert.equal(opened.match(/Full prompt supplied to Worker:/g)?.length, 1);
   assert.match(opened, /Click to show less/);
   assert.deepEqual(clickable.handleMouse({ type: 'click', button: 'left' }), { handled: true });
@@ -238,7 +239,8 @@ test('accepted intervention renders muted immediately and completes the same pur
   const complete = renderer(events[0], { expanded: true }, theme).render(80);
   assert.match(complete.join(''), /Preload path is invalid/);
   assert.match(complete.join(''), /Fix the preload string/);
-  assert.ok(styles.every(style => style.bg.r === 64 && style.bg.g === 51 && style.bg.b === 79));
+  assert.ok(styles.every(style => style.bg.r === 107 && style.bg.g === 63 && style.bg.b === 29));
+  assert.match(complete.join('\n'), /GUIDANCE SUPPLIED — DELIVERY PENDING/);
   assert.equal(renderer(terminal, { expanded: false }, theme), undefined);
   assert.equal(h.entryRenderers.get('pi-sitter-outcome')(
     h.entries.find(entry => entry.customType === 'pi-sitter-outcome'), { expanded: false }, theme), undefined);
@@ -286,14 +288,14 @@ test('rejected supervisor replies are quoted on demand and never labeled as Work
   card.handleMouse({ type: 'click', button: 'left' });
   const expanded = card.render(120).join('\n');
   assert.match(expanded, /Rejected supervisor response 1 \(not sent to Worker\)/);
-  assert.match(expanded, /> \{"issue":"First guess"/);
+  assert.match(expanded, /\{"issue":"First guess"/);
   assert.match(expanded, /Rejected supervisor response 2 \(not sent to Worker\)/);
   assert.match(expanded, /\\u001b\[2J/);
   assert.doesNotMatch(expanded, /\u001b/);
   assert.doesNotMatch(expanded, /Full prompt supplied to Worker/);
   const restored = harness('active', async () => { throw Error('unexpected inference'); }, h.entries);
   const replayed = restored.entryRenderers.get('pi-sitter-intervention')(events[0], { expanded: true }, theme).render(120).join('\n');
-  assert.match(replayed, /> \{"issue":"Second guess"/);
+  assert.match(replayed, /\{"issue":"Second guess"/);
 });
 
 test('ordinary Worker calls and passive monitoring create no intervention card', async () => {
@@ -427,18 +429,20 @@ test('weak inspection advice becomes a concrete Worker command and the card quot
   assert.match(collapsed, /Next: Read "src\/main.ts"/);
   const expanded = renderer(started, { expanded: true }, theme).render(62);
   assert.ok(expanded.every(row => Array.from(row).length === 62));
-  assert.equal(expanded.filter(row => row.includes('> Next:')).length, 1);
+  assert.equal(expanded.filter(row => row.includes(' Next:')).length, 1);
   assert.match(expanded.join('\n'), /Worker directive \(expanded below\)/);
   assert.match(expanded.join('\n'), /Rejected supervisor response 1 \(not sent to Worker\)/);
   const wideRows = renderer(started, { expanded: true }, theme).render(1000);
   const quoteStart = wideRows.findIndex(row => row.includes('Full prompt supplied to Worker:'));
   const promptRows = [];
   for (const row of wideRows.slice(quoteStart + 1)) {
-    if (!row.startsWith(' > ')) break;
+    if (!row.startsWith(' ')) break;
+    if (row.includes(' Issue:')) break;
     promptRows.push(row);
   }
-  const unwrapped = promptRows.map(row => row.slice(3).trimEnd()).join('\n');
-  assert.equal(unwrapped, directive);
+  const unwrapped = promptRows.map(row => row.slice(1).trimEnd()).join('\n');
+  assert.match(unwrapped, /Stop calling project_scene_tree/);
+  assert.doesNotMatch(unwrapped, /^ > /m);
   emit('project_scene_tree', 'post-1', {}, { tree: { name: 'Main' } });
   emit('project_scene_tree', 'post-2', {}, { tree: { name: 'Main' } });
   assert.ok(h.notices.some(([message]) => message.includes('loop unresolved')));
@@ -542,7 +546,14 @@ test('post-advice same-tool progress records Worker recovery; repeated ineffecti
   };
   const noop = { persisted: true, receipt: { status: 'noop', changes: [] }, set: false };
   emit('a', null, noop);
-  assert.ok((await boundary(h, emit('b', null, noop))).entries[0].content.includes('Do not repeat the null assignment'));
+  const advice = (await boundary(h, emit('b', null, noop))).entries[0].content;
+  assert.ok(advice.includes('Do not repeat the null assignment'));
+  const started = h.entries.find(entry => entry.customType === 'pi-sitter-intervention');
+  const card = h.entryRenderers.get('pi-sitter-intervention')(started, { expanded: false },
+    { appearance: 'dark', style: text => text });
+  assert.match(card.render(100).join('\n'), /GUIDANCE SUPPLIED — DELIVERY PENDING/);
+  h.handlers.get('context')({ messages: [{ role: 'custom', customType: 'pi-sitter-advisory', content: advice }] });
+  assert.match(card.render(100).join('\n'), /GUIDANCE RECEIVED — REPAIR UNVERIFIED/);
   emit('c', null, noop);
   emit('d', null, noop);
   assert.ok(h.notices.some(([message]) => message.includes('loop unresolved')));
@@ -550,6 +561,7 @@ test('post-advice same-tool progress records Worker recovery; repeated ineffecti
     persisted: true, receipt: { status: 'updated', changes: [{ op: 'set', before: null, after: 'assets/shapes/item_circle.json' }] }, set: true,
   });
   assert.equal(h.entries.filter(entry => entry.customType === 'pi-sitter-worker-recovery').length, 1);
+  assert.match(card.render(100).join('\n'), /WORKER ACTED — REPAIR UNVERIFIED/);
   await h.commands.get('sitter').handler('status', h.ctx);
   assert.match(h.notices.at(-1)[0], /Worker recoveries 1/);
 });
