@@ -16,6 +16,8 @@ export interface CompletionRecord {
   unverifiedGateIds: string[];
   regressions: string[];
   attempt: number;
+  finalValidationRepairCount?: number;
+  finalValidationRepairLimit?: number;
   elapsedMs: number;
   reason: string;
   taskId?: string;

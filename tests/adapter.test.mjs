@@ -486,6 +486,8 @@ test('deterministic host diagnostics append ordered, historical terminal verdict
   assert.ok(types.indexOf('pi-sitter-project-diagnostic') < types.indexOf('pi-sitter-project-diagnostic-verdict'));
   const first = h.entries.find(row => row.customType === 'pi-sitter-project-diagnostic-verdict');
   assert.deepEqual(first.data.failedIds, ['G2']);
+  await h.handlers.get('turn_end')({ outcome: 'completed', entries: [], message: {
+    role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Second report' }] }, toolResults: [] }, h.ctx);
   await h.handlers.get('agent_before_settle')(event, h.ctx);
   const verdicts = h.entries.filter(row => row.customType === 'pi-sitter-project-diagnostic-verdict');
   assert.equal(verdicts.length, 2);
@@ -495,6 +497,36 @@ test('deterministic host diagnostics append ordered, historical terminal verdict
   assert.match(renderer(verdicts[1], { expanded: false }, theme).render(100).join('\n'), /Host validation passed: 2\/2 checks/);
   h.handlers.get('session_start')({ type: 'session_start', reason: 'resume' }, h.ctx);
   assert.equal(h.entries.filter(row => row.customType === 'pi-sitter-project-diagnostic-verdict').length, 2);
+});
+
+test('duplicate settlement does not rerun a host diagnostic or append another verdict', async () => {
+  let runs = 0;
+  const h = harness('active', async () => ready, [], undefined,
+    { projectDiagnostic: async () => { runs++; return { status: 'FAIL', passed: 0, failed: 1, total: 1,
+      failures: [{ id: 'F1', detail: 'Missing saved state' }] }; },
+      limits: { ...piSitterLimits(), maxFinalValidationRepairCycles: 1 } });
+  const event = { outcome: 'completed', entries: [], continue: false };
+  const first = await h.handlers.get('agent_before_settle')(event, h.ctx);
+  assert.equal(first.continue, true);
+  assert.equal(await h.handlers.get('agent_before_settle')(event, h.ctx), undefined);
+  assert.equal(runs, 1);
+  const workerFinal = { outcome: 'completed', entries: [], messageEntryId: 'repair-final', message: {
+    role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Repair complete' }] }, toolResults: [] };
+  await h.handlers.get('turn_end')(workerFinal, h.ctx);
+  await h.handlers.get('agent_before_settle')(event, h.ctx);
+  await h.handlers.get('turn_end')(workerFinal, h.ctx);
+  assert.equal(await h.handlers.get('agent_before_settle')(event, h.ctx), undefined);
+  assert.equal(runs, 2);
+  assert.equal(h.entries.filter(row => row.customType === 'pi-sitter-project-diagnostic-verdict').length, 1);
+});
+
+test('injected final-validation repair limit uses the same default and upper bound', async () => {
+  for (const [value, expected] of [[0, 2], [99, 10]]) {
+    const h = harness('active', async () => ready, [], undefined,
+      { limits: { ...piSitterLimits(), maxFinalValidationRepairCycles: value } });
+    await h.commands.get('sitter').handler('status', h.ctx);
+    assert.match(h.notices.at(-1)[0], new RegExp(`final repairs 0/${expected}`));
+  }
 });
 
 test('deterministic no-op fallback steers only Active mode and stops at its own advisory budget', async () => {
@@ -878,6 +910,13 @@ test('tool classifiers retain current aliases and plain-text uncertainty', () =>
   for (const [name, body, expected] of cases)
     assert.equal(classifyObservation(observation(name, {}, body)).kind, expected, name);
   assert.equal(piSitterLimits().maxTriggers, 16);
+  assert.equal(piSitterLimits().maxFinalValidationRepairCycles, 2);
+  assert.equal(piSitterLimits('{"maxFinalValidationRepairCycles":1}').maxFinalValidationRepairCycles, 1);
+  assert.equal(piSitterLimits('{"maxFinalValidationRepairCycles":3}').maxFinalValidationRepairCycles, 3);
+  assert.equal(piSitterLimits('{"maxFinalValidationRepairCycles":10}').maxFinalValidationRepairCycles, 10);
+  assert.equal(piSitterLimits('{"maxFinalValidationRepairCycles":99}').maxFinalValidationRepairCycles, 10);
+  for (const value of [0, -1, 2.5, '3'])
+    assert.equal(piSitterLimits(JSON.stringify({ maxFinalValidationRepairCycles: value })).maxFinalValidationRepairCycles, 2);
   assert.equal(piSitterLimits('{"maxTriggers":32}').maxTriggers, 32);
   const engine = new PiSitterEngine('active', { maxTriggers: 32 });
   for (let n = 0; n < 32; n++) engine.restoreTrigger({ type: 'T1', tool: 'x', evidence: 'x', key: `k${n}` });

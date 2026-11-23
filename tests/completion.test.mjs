@@ -24,7 +24,7 @@ function report(stage, snapshot, results, regressions = []) {
     missingDeliverables: gates.filter(g => g.result === 'FAIL').map(g => g.id), validationLimitations: [] };
 }
 
-function harness({ mode = 'active', reports = [], branch = [], analyze, shouldAnalyze, evidenceBroker, completionReady } = {}) {
+function harness({ mode = 'active', reports = [], branch = [], analyze, shouldAnalyze, evidenceBroker, completionReady, limits } = {}) {
   process.env.PI_SITTER_MODE = mode;
   process.env.PI_SITTER_STAGE = '04';
   const handlers = new Map(), commands = new Map(), entryRenderers = new Map(), entries = [...branch], notices = [], sent = [], working = [];
@@ -67,7 +67,8 @@ function harness({ mode = 'active', reports = [], branch = [], analyze, shouldAn
     return { schemaVersion: 2, taskId: value.taskId, runId: randomUUID(), stage: value.stage,
       snapshotIdentity: value.snapshotIdentity, suite: value.suite, testCounts: value.testCounts, execution: value.execution,
       gates: value.gates.map(gate => ({ id: gate.id, tests: gate.tests })) };
-  }, loadControllerContext: controller, analyze, shouldAnalyze, evidenceBroker, completionReady })(pi);
+  }, loadControllerContext: controller, analyze, shouldAnalyze, evidenceBroker, completionReady,
+    ...(limits ? { limits } : {}) })(pi);
   handlers.get('session_start')({}, ctx);
   const settle = (outcome = 'completed') => handlers.get('agent_before_settle')({ outcome, entries: [], continue: false }, ctx);
   const workerFinish = () => handlers.get('turn_end')({ outcome: 'completed', entries: [], toolResults: [],
@@ -190,7 +191,7 @@ test('recovery regression is named and two attempts are the maximum', async () =
   assert.equal(second.continue, true);
   assert.match(second.entries.find(e => e.type === 'custom_message').content, /Regressed gate IDs: B/);
   assert.equal(await h.settle(), undefined);
-  assert.equal(h.entries.filter(e => e.customType === 'pi-sitter-completion').at(-1).data.decision, 'RECOVERY_REQUIRED');
+  assert.equal(h.entries.filter(e => e.customType === 'pi-sitter-completion').at(-1).data.decision, 'BLOCKED');
 });
 
 test('a user repair turn starts a fresh bounded recovery cycle, including after resume', async () => {
@@ -220,7 +221,8 @@ test('unchanged saved snapshot gets one focused retry of the same repair attempt
   const unchanged = report('04', 'p'.repeat(64), [['A', 'FAIL']]);
   const changed = report('04', 'q'.repeat(64), [['A', 'FAIL']]);
   const passed = report('04', 'r'.repeat(64), [['A', 'PASS']]);
-  const h = harness({ reports: [unchanged, unchanged, changed, passed] });
+  const h = harness({ reports: [unchanged, unchanged, changed, passed],
+    limits: { maxFinalValidationRepairCycles: 3 } });
   const first = await h.settle();
   assert.equal(first.entries.find(e => e.customType === 'pi-sitter-recovery').data.attempt, 1);
   await h.workerFinish();
@@ -254,12 +256,13 @@ test('resumed empty Worker turn retries once and restores that retry limit', asy
   const initial = harness({ reports: [unchanged] });
   const first = await initial.settle();
   const recovery = first.entries.find(e => e.customType === 'pi-sitter-recovery');
-  const branch = [...initial.entries, recovery, { type: 'message', message: { role: 'assistant', content: [] } }];
+  const branch = [...initial.entries, recovery, { type: 'message', message: { role: 'assistant',
+    stopReason: 'stop', content: [] } }];
   const resumed = harness({ reports: [unchanged], branch });
   const retry = await resumed.settle();
   assert.equal(retry.entries.find(e => e.customType === 'pi-sitter-recovery').data.retry, 1);
   const retriedBranch = [...resumed.entries, retry.entries.find(e => e.customType === 'pi-sitter-recovery'),
-    { type: 'message', message: { role: 'assistant', content: [] } }];
+    { type: 'message', message: { role: 'assistant', stopReason: 'stop', content: [] } }];
   const resumedAgain = harness({ reports: [unchanged], branch: retriedBranch });
   assert.equal(await resumedAgain.settle(), undefined);
 });

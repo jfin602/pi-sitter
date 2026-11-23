@@ -87,6 +87,8 @@ type ProjectDiagnosticCard = ProjectDiagnosticResult & {
   rawResult?: ProjectDiagnosticResult;
   rawFollowup?: ProjectDiagnosticResult;
   followupProgressVersion?: number;
+  repairCount?: number;
+  history?: { result: ProjectDiagnosticResult; repairCount: number }[];
 };
 type ProjectDiagnosticVerdict = {
   id: string;
@@ -101,8 +103,11 @@ type ProjectDiagnosticVerdict = {
   failedIds: string[];
   reason?: string;
   progressVersion: number;
+  repairCount?: number;
+  repairLimit?: number;
 };
-type RecoveryEntry = { attempt: number; plan: RecoveryPlan; delivery: string; retry?: number; displayId?: string };
+type RecoveryEntry = { attempt: number; plan: RecoveryPlan; delivery: string; retry?: number; displayId?: string;
+  finalValidationRepairCount?: number };
 type RecoveryRequest = { id: string; stage: string; reset: boolean; unavailable?: string };
 
 const SUPERVISOR_BG = { kind: 'rgb' as const, r: 64, g: 51, b: 79 };
@@ -263,7 +268,13 @@ function boundedProjectDiagnostic(value: ProjectDiagnosticResult): ProjectDiagno
 
 export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: ExtensionAPI) => void {
   return (pi: ExtensionAPI): void => {
-    const limits = dependencies.limits ?? piSitterLimits();
+    const injectedLimits = dependencies.limits;
+    const parsedLimits = piSitterLimits();
+    const limits = { ...parsedLimits, ...injectedLimits,
+      maxFinalValidationRepairCycles: Number.isInteger(injectedLimits?.maxFinalValidationRepairCycles) &&
+        (injectedLimits?.maxFinalValidationRepairCycles ?? 0) > 0 ?
+        Math.min(injectedLimits!.maxFinalValidationRepairCycles, 10) :
+        parsedLimits.maxFinalValidationRepairCycles };
     const engine = new PiSitterEngine(initialMode(), { maxTriggers: limits.maxTriggers,
       noChangeThreshold: limits.maxRepeatedIneffectiveOps });
     const view = new PiSitterView();
@@ -290,7 +301,13 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     let emptyFinalContinuationIssued = false;
     let emptyFinalTerminalIssued = false;
     let unavailableAtCompletionIssued = false;
-    let projectDiagnosticRetryIssued = false;
+    let finalValidationRepairCycles = 0;
+    let repairContinuationPending = false;
+    let workerFinalTurn = 0;
+    let lastDiagnosticSettledTurn = -1;
+    let lastProtectedSettledTurn = -1;
+    let lastProtectedSettledSource: string | undefined;
+    const seenWorkerFinalMessageIds = new Set<string>();
     let lastProjectDiagnosticPrompt: string | undefined;
     let lastDiagnostic: DiagnosticEvidence | undefined;
     const handledEmptyFinalMessages = new Set<string>();
@@ -305,6 +322,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     let recoveryPlan: RecoveryPlan | undefined;
     let recoveryAttempts = 0;
     let verificationRuns = 0;
+    let automaticFinalVerificationRuns = 0;
     const completedCheckpoints = new Set<string>();
     const seenRunIds = new Set<string>();
     const recoveryKeys = new Set<string>();
@@ -359,13 +377,19 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       diagnosticEpoch++;
       recoveryAttempts = 0;
       verificationRuns = 0;
+      automaticFinalVerificationRuns = 0;
       recoveryKeys.clear();
       lastRecovery = undefined;
       recoveryTurnObserved = false;
       emptyFinalContinuationIssued = false;
       emptyFinalTerminalIssued = false;
       unavailableAtCompletionIssued = false;
-      projectDiagnosticRetryIssued = false;
+      finalValidationRepairCycles = 0;
+      repairContinuationPending = false;
+      lastDiagnosticSettledTurn = -1;
+      lastProtectedSettledTurn = -1;
+      lastProtectedSettledSource = undefined;
+      seenWorkerFinalMessageIds.clear();
       activeDiagnosticId = undefined;
       currentDiagnosticVerdictId = undefined;
       lastProjectDiagnosticPrompt = undefined;
@@ -427,7 +451,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     }
 
     function beginPendingVerification(ctx: ExtensionContext): void {
-      if (!ctx.hasUI || pendingVerificationId || verificationRuns >= limits.maxCompletionVerifications) return;
+      if (!ctx.hasUI || pendingVerificationId) return;
       const id = randomUUID();
       verificationCards.set(id, undefined);
       try { pi.appendEntry(VERIFICATION_PENDING_TYPE, { id, stage: engine.stage }); }
@@ -513,8 +537,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         lastRecovery.plan.diagnosis.suite?.id === report.suite.id &&
         lastRecovery.plan.diagnosis.suite?.version === report.suite.version &&
         lastRecovery.plan.diagnosis.suite?.digest === report.suite.digest &&
-        (lastRecovery.retry ?? 0) < MAX_NO_PROGRESS_RETRIES &&
-        verificationRuns < limits.maxCompletionVerifications;
+        (lastRecovery.retry ?? 0) < MAX_NO_PROGRESS_RETRIES;
     }
 
     function beginNoProgressRetry(ctx: ExtensionContext): RecoveryEntry {
@@ -540,7 +563,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       if (lines) {
         lines.splice(1, 0, `Worker ${workerState} | stage ${engine.stage || 'unset'} | gates ${lastCompletion?.decision ?? 'pending'}`);
         if (lastCompletion?.runId) lines.splice(2, 0, `Task ${lastCompletion.taskId} | milestone ${lastCompletion.milestoneId} | run ${lastCompletion.runId}`);
-        lines.splice(2, 0, `${verificationActivity} | ${verificationElapsedMs} ms | recovery ${recoveryAttempts}/${limits.maxRecoveryAttempts}`);
+        lines.splice(2, 0, `${verificationActivity} | ${verificationElapsedMs} ms | recovery ${recoveryAttempts}/${limits.maxRecoveryAttempts} | final repairs ${finalValidationRepairCycles}/${limits.maxFinalValidationRepairCycles}`);
         const unresolved = unresolvedIds();
         if (unresolved.length) lines.splice(3, 0, `Unresolved: ${unresolved.slice(0, 5).join(', ')}${unresolved.length > 5 ? '…' : ''}`);
         lines.splice(4, 0, `Supervisor inference: ${supervisorActivity}`);
@@ -662,14 +685,18 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           }
         } catch { /* The normal verification path records BLOCKED. */ }
       }
-      if (verificationRuns >= limits.maxCompletionVerifications) {
+      const automaticFinal = request.reason === 'final' || request.reason === 'post_repair';
+      if (automaticFinal ? automaticFinalVerificationRuns >= limits.maxFinalValidationRepairCycles + 1 :
+          verificationRuns >= limits.maxCompletionVerifications) {
         verificationActivity = 'Completion verification budget exhausted';
         ctx.ui.notify('Pi Sitter completion verification budget exhausted', 'warning');
         render(ctx);
         return {};
       }
       verificationRuns++;
-      try { pi.appendEntry(VERIFY_ATTEMPT_TYPE, { stage: engine.stage, attempt: verificationRuns }); }
+      if (automaticFinal) automaticFinalVerificationRuns++;
+      try { pi.appendEntry(VERIFY_ATTEMPT_TYPE, { stage: engine.stage, attempt: verificationRuns,
+        ...(automaticFinal ? { automaticFinal: true } : {}) }); }
       catch { /* Verification still runs if metadata could not be saved. */ }
       const current = new AbortController();
       verificationController = current;
@@ -769,9 +796,16 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           unverifiedGateIds: report.gates.filter(gate => gate.result === 'UNVERIFIED').map(gate => gate.id),
           regressions: report.regressions, attempt: recoveryAttempts, elapsedMs: verificationElapsedMs,
           reason: decision.reason, taskId: report.taskId, milestoneId: checkpoint.milestoneId,
+          ...(automaticFinal ? { finalValidationRepairCount: finalValidationRepairCycles,
+            finalValidationRepairLimit: limits.maxFinalValidationRepairCycles } : {}),
           suite: report.suite, requirements: review?.findings ?? authoritative.originalTask.requirements.map(req => ({
             id: req.id, status: 'UNVERIFIED' as const, reason: 'Independent source review unavailable', evidence: [],
             limitations: ['No host-approved requirement inspection was configured'] })) };
+        if (automaticFinal && completion.decision === 'RECOVERY_REQUIRED' &&
+            finalValidationRepairCycles >= limits.maxFinalValidationRepairCycles) {
+          completion.decision = 'BLOCKED';
+          completion.reason = `Completion blocked after ${finalValidationRepairCycles}/${limits.maxFinalValidationRepairCycles} final-validation repairs: ${completion.counts.FAIL} protected gates still failing; IDs ${completion.failedGateIds.join(', ') || 'none'}`;
+        }
         appendCompletion(ctx, completion);
         lastCompletion = completion;
         recoveryPlan = completion.decision === 'RECOVERY_REQUIRED' ? (dependencies.recoveryPlan ?? createRecoveryPlan)(report, authoritative.originalTask.text) : undefined;
@@ -941,6 +975,8 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         const technical = [
           `Diagnostic source: ${result.suite ?? 'host project diagnostic'}; stage ${result.stage}`,
           `Initial status: ${result.status}; ${result.passed}/${result.total} passed; ${result.failed} failed`,
+          `Final-validation repairs: ${result.repairCount ?? 0}/${limits.maxFinalValidationRepairCycles}`,
+          ...(result.history ?? []).map(row => `Earlier follow-up after repair ${row.repairCount}: ${row.result.status}; ${row.result.passed}/${row.result.total} passed; ${row.result.failed} failed; IDs ${(row.result.failures ?? []).map(failure => failure.id).join(', ') || 'none'}`),
           ...((result.rawResult?.failures ?? result.failures ?? []).flatMap(row => [`${row.id}:`, ...
             (detailMode === 'raw' ? safeRawLines(row.detail) : readableMarkdown(row.detail)),
             ...(row.path ? [`Path: ${row.path}`] : []),
@@ -961,7 +997,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           result.status === 'PASS' ? 'Saved project checks passed' : 'Host diagnostic failed');
         return supervisorCard(theme, { stage: result.stage,
           status,
-          summary: `${progress}${bar ? `  ${bar}` : ''}\n${heading}`,
+          summary: `${progress}${bar ? `  ${bar}` : ''}\n${heading}\nFinal-validation repairs ${result.repairCount ?? 0}/${limits.maxFinalValidationRepairCycles}`,
           details: [
             ...(finding ? [`${finding.id}${finding.path ? `  ${finding.path}` : ''}`,
               finding.explanation,
@@ -1007,13 +1043,15 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     });
     function appendDiagnosticVerdict(diagnosticId: string, result: ProjectDiagnosticResult,
       progressVersion: number, stage = engine.stage): void {
+      if (currentDiagnosticVerdictId && diagnosticCards.has(diagnosticId)) return;
       const verdict: ProjectDiagnosticVerdict = { id: randomUUID(), diagnosticId, stage,
         suite: result.suite, runId: result.id ?? result.runId, status: result.status,
         passed: result.status === 'BLOCKED' ? 0 : result.passed,
         failed: result.status === 'BLOCKED' ? 0 : result.failed,
         total: result.status === 'BLOCKED' ? 0 : result.total,
         failedIds: result.status === 'FAIL' ? [...new Set((result.failures ?? []).map(row => row.id))].slice(0, 12) : [],
-        reason: result.reason, progressVersion };
+        reason: result.reason, progressVersion,
+        repairCount: finalValidationRepairCycles, repairLimit: limits.maxFinalValidationRepairCycles };
       currentDiagnosticVerdictId = verdict.id;
       pi.appendEntry(PROJECT_DIAGNOSTIC_VERDICT_TYPE, verdict);
     }
@@ -1030,6 +1068,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           details: [
             `Suite ${value.suite ?? 'host project diagnostic'}${value.runId ? `; run ${value.runId}` : ''}`,
             `Saved progress version ${value.progressVersion}; diagnostic attempt ${value.diagnosticId}`,
+            `Final-validation repairs ${value.repairCount ?? 0}/${value.repairLimit ?? limits.maxFinalValidationRepairCycles}`,
             ...(value.status === 'FAIL' && value.failedIds.length ? [`Failed IDs: ${value.failedIds.join(', ')}`] : []),
             ...(expanded ? ['Host diagnostic only; protected acceptance and independent requirement review are separate.'] : []),
           ], tone: current && value.status === 'PASS' ? 'normal' : 'failure' }, width);
@@ -1127,13 +1166,18 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           value.decision === 'UNVERIFIED' ?
             `${value.counts.UNVERIFIED} unverified: ${value.unverifiedGateIds.join(', ') || value.reason}` : value.reason;
       const protectedTotal = value.counts ? value.counts.PASS + value.counts.FAIL + value.counts.UNVERIFIED : 0;
+      const recoveryLimit = value.finalValidationRepairCount !== undefined ?
+        Math.max(limits.maxRecoveryAttempts, value.finalValidationRepairLimit ?? limits.maxFinalValidationRepairCycles) :
+        limits.maxRecoveryAttempts;
       const tone: CardTone = value.decision === 'VERIFIED' ? 'normal' :
-        value.decision === 'RECOVERY_REQUIRED' && value.attempt < limits.maxRecoveryAttempts ? 'recovery' : 'failure';
+        value.decision === 'RECOVERY_REQUIRED' && value.attempt < recoveryLimit ? 'recovery' : 'failure';
       return supervisorCard(theme, {
         stage: value.stage,
         status: historical ? 'HISTORICAL' : value.decision === 'RECOVERY_REQUIRED' && tone === 'failure' ? 'FAILED' : value.decision,
         summary: historical ? summary : `${summary}\n${protectedTotal ? `Protected gates: ${value.counts.PASS}/${protectedTotal} passed` : 'Protected gate count unknown'}`,
-        details: expanded ? [value.reason, ...(value.requirements ?? []).map(row =>
+        details: expanded ? [value.reason,
+          ...(value.finalValidationRepairCount !== undefined ? [`Final-validation repairs ${value.finalValidationRepairCount}/${value.finalValidationRepairLimit ?? limits.maxFinalValidationRepairCycles}`] : []),
+          ...(value.requirements ?? []).map(row =>
           `${row.id} ${row.status}: ${row.reason}${row.evidence.length ? ` (${row.evidence.map(item => `${item.path}:${item.line}`).join(', ')})` : ''}`)] : [], tone,
       }, width);
     }
@@ -1166,7 +1210,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       return { render(width: number) { const current = currentRecovery() && value.plan.diagnosis?.run === lastCompletion?.runId;
         return expanded ? supervisorCard(theme, {
         stage: value.plan.stage, status: current ? 'RECOVERY_QUEUED' : 'HISTORICAL',
-        summary: current ? `Attempt ${value.attempt} of ${limits.maxRecoveryAttempts}${value.retry ? `, retry ${value.retry}` : ''} for ${value.plan.focusGateIds.join(', ')}` :
+        summary: current ? `Attempt ${value.attempt} of ${value.finalValidationRepairCount !== undefined ? Math.max(limits.maxRecoveryAttempts, limits.maxFinalValidationRepairCycles) : limits.maxRecoveryAttempts}${value.retry ? `, retry ${value.retry}` : ''} for ${value.plan.focusGateIds.join(', ')}` :
           'Historical recovery; no current repair is authorized by this entry',
         details: [`Delivery: ${value.delivery}`, ...details], tone: current ? 'recovery' : 'failure',
       }, width) : []; }, invalidate() {} };
@@ -1186,7 +1230,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         }, width);
         const current = currentRecovery() && state.plan.diagnosis?.run === lastCompletion?.runId;
         return supervisorCard(theme, { stage: value.stage, status: current ? 'RECOVERY_QUEUED' : 'HISTORICAL',
-          summary: current ? `Attempt ${state.attempt} of ${limits.maxRecoveryAttempts} for ${state.plan.focusGateIds.join(', ')}` :
+          summary: current ? `Attempt ${state.attempt} of ${state.finalValidationRepairCount !== undefined ? Math.max(limits.maxRecoveryAttempts, limits.maxFinalValidationRepairCycles) : limits.maxRecoveryAttempts} for ${state.plan.focusGateIds.join(', ')}` :
             'Historical recovery; no current repair is authorized by this entry',
           details: expanded ? [`Delivery: ${state.delivery}`, ...state.plan.text.split('\n')] : [], tone: current ? 'recovery' : 'failure',
         }, width);
@@ -1266,6 +1310,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         recoveryPlan = undefined;
         recoveryAttempts = 0;
         verificationRuns = 0;
+        automaticFinalVerificationRuns = 0;
         completedCheckpoints.clear();
         seenRunIds.clear();
         recoveryKeys.clear();
@@ -1274,7 +1319,13 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         emptyFinalContinuationIssued = false;
         emptyFinalTerminalIssued = false;
         unavailableAtCompletionIssued = false;
-        projectDiagnosticRetryIssued = false;
+        finalValidationRepairCycles = 0;
+        repairContinuationPending = false;
+        workerFinalTurn = 0;
+        lastDiagnosticSettledTurn = -1;
+        lastProtectedSettledTurn = -1;
+        lastProtectedSettledSource = undefined;
+        seenWorkerFinalMessageIds.clear();
         lastProjectDiagnosticPrompt = undefined;
         lastDiagnostic = undefined;
         selectedPlanId = undefined;
@@ -1308,6 +1359,12 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
             startUserCompletionCycle();
             replayPendingDiagnosticId = undefined;
           }
+          if (entry.type === 'message' && entry.message.role === 'assistant' &&
+              entry.message.stopReason === 'stop') {
+            if (entry.id) seenWorkerFinalMessageIds.add(entry.id);
+            workerFinalTurn++;
+            repairContinuationPending = false;
+          }
           if (entry.type === 'message' && lastRecovery && entry.message.role === 'assistant') recoveryTurnObserved = true;
           if (entry.type !== 'custom') continue;
           if (entry.customType === TASK_HISTORY_TYPE && entry.data && typeof entry.data === 'object') {
@@ -1324,7 +1381,11 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
             }
           }
           if (entry.customType === PROJECT_DIAGNOSTIC_RETRY_TYPE && entry.data && typeof entry.data === 'object' &&
-              (entry.data as { stage?: string }).stage === stage) projectDiagnosticRetryIssued = true;
+              (entry.data as { stage?: string }).stage === stage) {
+            finalValidationRepairCycles = Math.max(finalValidationRepairCycles,
+              (entry.data as { repairCount?: number }).repairCount ?? 1);
+            repairContinuationPending = true;
+          }
           if (entry.customType === PROJECT_DIAGNOSTIC_PENDING_TYPE && entry.data && typeof entry.data === 'object' &&
               (entry.data as { stage?: string }).stage === stage) {
             currentDiagnosticVerdictId = undefined;
@@ -1340,6 +1401,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
             if (saved.stage === stage && saved.displayId) {
               diagnosticCards.set(saved.displayId, saved);
               activeDiagnosticId = saved.displayId;
+              if (!saved.followupPending) lastDiagnosticSettledTurn = workerFinalTurn;
             }
             if (saved.stage === stage && saved.workerPrompt) lastProjectDiagnosticPrompt = saved.workerPrompt;
             if (saved.stage === stage) {
@@ -1353,6 +1415,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
             const saved = entry.data as ProjectDiagnosticVerdict;
             if (saved.stage === stage && typeof saved.id === 'string') {
               currentDiagnosticVerdictId = saved.id;
+              lastDiagnosticSettledTurn = workerFinalTurn;
               if (saved.diagnosticId === replayPendingDiagnosticId) replayPendingDiagnosticId = undefined;
             }
           }
@@ -1401,6 +1464,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           if (entry.customType === VERIFY_ATTEMPT_TYPE && entry.data && typeof entry.data === 'object' &&
               (entry.data as { stage?: string }).stage === stage) {
             verificationRuns++;
+            if ((entry.data as { automaticFinal?: boolean }).automaticFinal) automaticFinalVerificationRuns++;
             lastReport = undefined;
             lastCompletion = undefined;
             recoveryPlan = undefined;
@@ -1409,6 +1473,10 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           }
           if (entry.customType === COMPLETION_TYPE && entry.data && typeof entry.data === 'object' && (entry.data as CompletionRecord).stage === stage) {
             lastCompletion = entry.data as CompletionRecord;
+            if (lastCompletion.finalValidationRepairCount !== undefined) {
+              lastProtectedSettledTurn = workerFinalTurn;
+              lastProtectedSettledSource = lastCompletion.attemptSourceSnapshot ?? lastCompletion.snapshotIdentity;
+            }
             if (lastCompletion.displayId && verificationCards.has(lastCompletion.displayId))
               verificationCards.set(lastCompletion.displayId, lastCompletion);
           }
@@ -1419,6 +1487,8 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
                 saved.plan.diagnosis.suite?.digest === lastCompletion?.suite?.digest) {
               if (saved.displayId && recoveryCards.has(saved.displayId)) recoveryCards.set(saved.displayId, saved);
               recoveryAttempts = Math.max(recoveryAttempts, saved.attempt ?? 0);
+              finalValidationRepairCycles = Math.max(finalValidationRepairCycles,
+                saved.finalValidationRepairCount ?? 0);
               recoveryKeys.add(saved.plan.key);
               lastRecovery = saved;
               recoveryTurnObserved = false;
@@ -1790,6 +1860,13 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     });
 
     pi.on('turn_end', event => {
+      if (event.outcome === 'completed' && event.message.role === 'assistant' &&
+          event.message.stopReason === 'stop' &&
+          (!event.messageEntryId || !seenWorkerFinalMessageIds.has(event.messageEntryId))) {
+        if (event.messageEntryId) seenWorkerFinalMessageIds.add(event.messageEntryId);
+        workerFinalTurn++;
+        repairContinuationPending = false;
+      }
       if (event.outcome !== 'completed' || engine.mode === 'off' ||
           event.message.role !== 'assistant' || event.message.stopReason !== 'stop' ||
           event.toolResults.length > 0 || !event.messageEntryId ||
@@ -1813,7 +1890,8 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
 
     pi.on('agent_before_settle', async (event, ctx) => {
       if (event.outcome !== 'completed' || engine.mode === 'off' || !engine.stage ||
-          !dependencies.projectDiagnostic || protectedVerifierAvailable()) return;
+          !dependencies.projectDiagnostic || protectedVerifierAvailable() || repairContinuationPending ||
+          projectDiagnosticController || lastDiagnosticSettledTurn === workerFinalTurn) return;
       const current = new AbortController();
       projectDiagnosticController = current;
       const sessionId = engine.sessionId;
@@ -1856,33 +1934,43 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           if (pendingDiagnosticId === displayId) pendingDiagnosticId = undefined;
           if (ctx.hasUI) ctx.ui.setWorkingMessage();
           appendDiagnosticVerdict(displayId, blocked, engine.progressVersion);
+          lastDiagnosticSettledTurn = workerFinalTurn;
         }
         return;
       }
       lastDiagnostic = result.status === 'FAIL' ? { stage: engine.stage, failed: result.failed, total: result.total,
         failures: result.failures ?? [], progressVersion: engine.progressVersion } : undefined;
       let prompt: string | undefined;
-      if (result.status === 'FAIL' && !projectDiagnosticRetryIssued && !emptyFinalTerminalIssued && engine.mode === 'active') {
-        projectDiagnosticRetryIssued = true;
+      if (result.status === 'FAIL' && finalValidationRepairCycles < limits.maxFinalValidationRepairCycles &&
+          !emptyFinalTerminalIssued && engine.mode === 'active') {
         prompt = buildProjectDiagnosticPrompt(result, engine.task);
       }
       const card: ProjectDiagnosticCard = followupCard ? { ...followupCard, followupPending: false,
         followup: result, rawFollowup: rawResult, followupProgressVersion: engine.progressVersion,
+        repairCount: finalValidationRepairCycles + (prompt ? 1 : 0),
+        history: [...(followupCard.history ?? []), ...(followupCard.followup ?
+          [{ result: followupCard.followup, repairCount: followupCard.repairCount ?? 1 }] : [])],
+        workerPrompt: prompt ?? followupCard.workerPrompt,
         workerProgressObserved: engine.progressVersion > (followupCard.progressVersion ?? engine.progressVersion) } :
         { stage: engine.stage, ...result, rawResult,
           progressVersion: engine.progressVersion, displayId, workerPrompt: prompt,
+          repairCount: finalValidationRepairCycles + (prompt ? 1 : 0),
           previousWorkerPrompt: prompt ? undefined : lastProjectDiagnosticPrompt };
       diagnosticCards.set(displayId, card);
       pendingDiagnosticId = undefined;
       if (ctx.hasUI) ctx.ui.setWorkingMessage();
       pi.appendEntry(PROJECT_DIAGNOSTIC_TYPE, card);
+      lastDiagnosticSettledTurn = workerFinalTurn;
       if (!prompt) {
         appendDiagnosticVerdict(displayId, result, engine.progressVersion);
         return;
       }
+      finalValidationRepairCycles++;
+      repairContinuationPending = true;
       lastProjectDiagnosticPrompt = prompt;
       return { entries: [...event.entries,
-        { type: 'custom' as const, customType: PROJECT_DIAGNOSTIC_RETRY_TYPE, data: { stage: engine.stage } },
+        { type: 'custom' as const, customType: PROJECT_DIAGNOSTIC_RETRY_TYPE,
+          data: { stage: engine.stage, repairCount: finalValidationRepairCycles } },
         { type: 'custom_message' as const, customType: PROJECT_DIAGNOSTIC_RETRY_TYPE, content: prompt, display: false }],
         continue: true };
     });
@@ -1962,8 +2050,20 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         }
         request = dependencies.loadCheckpoint?.(engine.stage, ctx.cwd) ?? request;
       } catch { /* verify records a BLOCKED result using the same trusted ingress. */ }
+      const automaticFinal = request.reason === 'final' || request.reason === 'post_repair';
+      let currentSource: string | undefined;
+      if (automaticFinal) try {
+        currentSource = dependencies.loadControllerContext?.(engine.stage, ctx.cwd)?.sourceSnapshot;
+      } catch { /* Verification records invalid host context. */ }
+      if (automaticFinal && lastProtectedSettledTurn === workerFinalTurn &&
+          currentSource === lastProtectedSettledSource) return;
       const { report, completion } = await verify(ctx, request);
-      if (!report || !completion) return;
+      if (!completion) return;
+      if (automaticFinal) {
+        lastProtectedSettledTurn = workerFinalTurn;
+        lastProtectedSettledSource = currentSource ?? completion.snapshotIdentity;
+      }
+      if (!report) return;
       if (report.snapshotIdentity !== 'unavailable' && dependencies.evidenceBroker &&
           dependencies.shouldAnalyze?.(report) && completionDiagnosisCalls < 1) {
         const current = new AbortController();
@@ -2024,19 +2124,24 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         }
       }
       if (emptyFinalTerminalIssued || completion.decision !== 'RECOVERY_REQUIRED' || !currentRecovery() || !recoveryPlan) return;
+      if (automaticFinal && finalValidationRepairCycles >= limits.maxFinalValidationRepairCycles) return;
       if (noProgressRetryReady(report)) {
         const retry = beginNoProgressRetry(ctx);
+        if (automaticFinal) retry.finalValidationRepairCount = ++finalValidationRepairCycles;
         return { entries: [...event.entries,
           { type: 'custom' as const, customType: RECOVERY_TYPE, data: retry },
           { type: 'custom_message' as const, customType: RECOVERY_MESSAGE_TYPE,
             content: noProgressRecoveryPrompt(recoveryPlan), display: false }], continue: true };
       }
-      if (engine.mode !== 'active' || recoveryAttempts >= limits.maxRecoveryAttempts || recoveryKeys.has(recoveryPlan.key)) return;
+      const recoveryLimit = automaticFinal ? Math.max(limits.maxRecoveryAttempts,
+        limits.maxFinalValidationRepairCycles) : limits.maxRecoveryAttempts;
+      if (engine.mode !== 'active' || recoveryAttempts >= recoveryLimit || recoveryKeys.has(recoveryPlan.key)) return;
       const plan = recoveryPlan;
       const attempt = recoveryAttempts + 1;
       recoveryAttempts = attempt;
       recoveryKeys.add(plan.key);
-      lastRecovery = { attempt, plan, delivery: 'committed_for_continuation' };
+      lastRecovery = { attempt, plan, delivery: 'committed_for_continuation',
+        ...(automaticFinal ? { finalValidationRepairCount: ++finalValidationRepairCycles } : {}) };
       recoveryTurnObserved = false;
       workerState = 'Recovering';
       verificationActivity = `Recovery ${attempt} queued at completion boundary`;
@@ -2121,6 +2226,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         recoveryPlan = undefined;
         recoveryAttempts = 0;
         verificationRuns = 0;
+        automaticFinalVerificationRuns = 0;
         recoveryKeys.clear();
         lastRecovery = undefined;
         recoveryTurnObserved = false;
@@ -2190,7 +2296,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           }
           else if (command === 'status') {
             const state = refreshReadiness(ctx);
-            ctx.ui.notify(`Pi Sitter ${engine.mode}; readiness ${state.status}; ${testSetupSummary()}; Worker ${workerState}; stage ${engine.stage || 'unset'}; gates ${lastCompletion?.decision ?? 'pending'}; ${verificationActivity}; verification ${verificationElapsedMs} ms (${verificationRuns}/${limits.maxCompletionVerifications}); recovery ${recoveryAttempts}/${limits.maxRecoveryAttempts}; diagnosis ${completionDiagnosisCalls}/1; recovery generation ${recoveryGenerationCalls}/1; unresolved ${unresolvedIds().join(', ') || 'none'}; ${attemptLabel(lastCompletion)}; status ${view.phase}${view.result ? `: ${view.result}` : ''}; last rejected ${lastRejectedReason || "none"}; triggers ${engine.triggerCount}; inference ${calls}/${limits.maxInferenceAttempts}; valid ${validDiagnoses}; model delivered ${modelAdvisories}/${limits.maxValidAdvisories}; fallback delivered ${fallbackAdvisories}/${limits.maxFallbackAdvisories}; delivered ${delivered}; confirmed ${confirmedDeliveries}; failed deliveries ${failedDeliveries}; Worker recoveries ${workerRecoveries}; abstained ${abstained}; failed ${failed}; budget ${remaining()}; tokens ${inputTokens}/${outputTokens}; latency ${totalLatencyMs} ms; observer ${engine.overheadMs.toFixed(1)} ms`, 'info');
+            ctx.ui.notify(`Pi Sitter ${engine.mode}; readiness ${state.status}; ${testSetupSummary()}; Worker ${workerState}; stage ${engine.stage || 'unset'}; gates ${lastCompletion?.decision ?? 'pending'}; ${verificationActivity}; verification ${verificationElapsedMs} ms (${verificationRuns}/${limits.maxCompletionVerifications}); recovery ${recoveryAttempts}/${limits.maxRecoveryAttempts}; final repairs ${finalValidationRepairCycles}/${limits.maxFinalValidationRepairCycles}; diagnosis ${completionDiagnosisCalls}/1; recovery generation ${recoveryGenerationCalls}/1; unresolved ${unresolvedIds().join(', ') || 'none'}; ${attemptLabel(lastCompletion)}; status ${view.phase}${view.result ? `: ${view.result}` : ''}; last rejected ${lastRejectedReason || "none"}; triggers ${engine.triggerCount}; inference ${calls}/${limits.maxInferenceAttempts}; valid ${validDiagnoses}; model delivered ${modelAdvisories}/${limits.maxValidAdvisories}; fallback delivered ${fallbackAdvisories}/${limits.maxFallbackAdvisories}; delivered ${delivered}; confirmed ${confirmedDeliveries}; failed deliveries ${failedDeliveries}; Worker recoveries ${workerRecoveries}; abstained ${abstained}; failed ${failed}; budget ${remaining()}; tokens ${inputTokens}/${outputTokens}; latency ${totalLatencyMs} ms; observer ${engine.overheadMs.toFixed(1)} ms`, 'info');
           } else if (command === 'gates') {
             const gates = controllerContext?.suite.gates ?? [];
             ctx.ui.notify(gates.length ? `Host-provided protected gates for ${engine.stage}:\n${gates.map(gate => `${gate.id}: ${lastReport?.gates.find(row => row.id === gate.id)?.result ?? 'PENDING'} — requirements ${gate.requirementIds.join(', ')}`).join('\n')}` : 'No trusted gate contract is available for this stage', gates.length ? 'info' : 'warning');

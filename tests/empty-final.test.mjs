@@ -6,16 +6,17 @@ import { join } from 'node:path';
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import { createFauxCore, fauxAssistantMessage } from '@earendil-works/pi-ai/providers/faux';
 import { createPiSitter } from '../src/index.ts';
+import { piSitterLimits } from '../src/config.ts';
 
 const sha = 'a'.repeat(64);
 const suiteDigest = 'b'.repeat(64);
 
-function controller() {
+function controller(sourceSnapshot = sha) {
   return { schemaVersion: 1, taskId: 'empty-final-fixture', stage: 'final',
     originalTask: { text: 'Finish the task and report checks', reference: 'controller:fixture', version: 'v1',
       requirements: [{ id: 'R1', text: 'Finish the task and report checks' }] },
     suite: { id: 'protected-suite', version: 'v1', digest: suiteDigest,
-      gates: [{ id: 'G1', requirementIds: ['R1'], testIds: ['T1'] }] }, sourceSnapshot: sha };
+      gates: [{ id: 'G1', requirementIds: ['R1'], testIds: ['T1'] }] }, sourceSnapshot };
 }
 
 function passingReport() {
@@ -26,7 +27,7 @@ function passingReport() {
 }
 
 async function nativeSession({ responses, projectTest = false, configured = false, verifiedReview = false,
-  diagnostics, mode = 'active' }) {
+  diagnostics, mode = 'active', limits, protectedResults }) {
   const root = await mkdtemp(join(tmpdir(), 'pi-sitter-empty-final-'));
   const agentDir = join(root, 'agent');
   if (projectTest) await writeFile(join(root, 'package.json'), JSON.stringify({ scripts: { test: 'node --test' } }));
@@ -40,7 +41,7 @@ async function nativeSession({ responses, projectTest = false, configured = fals
   const observer = pi => {
     pi.on('agent_before_settle', () => { seen.settles++; });
   };
-  const deps = configured ? { loadControllerContext: controller, verify: async () => {
+  const deps = configured ? { loadControllerContext: () => controller(), verify: async () => {
     seen.verifies++;
     return passingReport();
   }, ...(verifiedReview ? {
@@ -64,11 +65,25 @@ async function nativeSession({ responses, projectTest = false, configured = fals
     seen.diagnostics++;
     return typeof diagnostics === 'function' ? diagnostics(...args) : diagnostics.shift();
   };
+  if (protectedResults) {
+    const source = () => String.fromCharCode(97 + Math.min(Math.max(0, seen.turns.length - 1), 10)).repeat(64);
+    deps.loadControllerContext = () => controller(source());
+    deps.verify = async () => {
+      const index = seen.verifies++;
+      const fail = protectedResults[index] === 'FAIL';
+      return { schemaVersion: 2, taskId: 'empty-final-fixture', runId: `protected-run-${index}`,
+        stage: 'final', snapshotIdentity: source(),
+        suite: { id: 'protected-suite', version: 'v1', digest: suiteDigest },
+        testCounts: { executed: 1, skipped: 0, passed: fail ? 0 : 1, failed: fail ? 1 : 0 },
+        execution: { exitCode: fail ? 1 : 0 }, gates: [{ id: 'G1', tests: [{ id: 'T1',
+          result: fail ? 'FAIL' : 'PASS', evidence: `Protected assertion ${index}` }] }] };
+    };
+  }
   let session;
   try {
     const loader = new DefaultResourceLoader({ cwd: root, agentDir, noExtensions: true, noSkills: true,
       noPromptTemplates: true, noThemes: true, noContextFiles: true,
-      extensionFactories: [createPiSitter(deps), observer] });
+      extensionFactories: [createPiSitter({ ...deps, ...(limits ? { limits: { ...piSitterLimits(), ...limits } } : {}) }), observer] });
     await loader.reload();
     ({ session } = await createAgentSession({ cwd: root, agentDir, model: faux.getModel(),
       resourceLoader: loader, settingsManager: SettingsManager.create(root, agentDir),
@@ -236,7 +251,7 @@ test('native Pi repeated host diagnostic failure stops after one repair continua
     failures: [{ id: 'downstream', detail: 'AssertionError: behavior unavailable\n    at /host/protected.test.js:8:1' },
       { id: 'saved-state', detail: 'AssertionError: Main script=missing: expected FAIL to be PASS\n    at /host/protected.test.js:9:1' }] };
   const h = await nativeSession({ responses: [fauxAssistantMessage('Done.'), fauxAssistantMessage('Done again.')],
-    diagnostics: [failure, failure] });
+    diagnostics: [failure, failure], limits: { maxFinalValidationRepairCycles: 1 } });
   try {
     await h.session._startRun({ messageType: 'user', prompt: 'Finish the task' });
     assert.equal(h.seen.turns.length, 2);
@@ -252,6 +267,82 @@ test('native Pi repeated host diagnostic failure stops after one repair continua
   } finally { await h.close(); }
 });
 
+for (const limit of [1, 3, 10]) test(`host diagnostic exhausts exactly ${limit} final-validation repairs`, async () => {
+  const diagnostics = Array.from({ length: limit + 1 }, (_, index) => ({
+    id: `run-${index}`, status: 'FAIL', suite: 'fixture', passed: index, failed: limit + 1 - index,
+    total: limit + 1, failures: [{ id: `F-${index}`, detail: `Failure after repair ${index}` }],
+  }));
+  const h = await nativeSession({ responses: Array.from({ length: limit + 1 }, (_, index) =>
+    fauxAssistantMessage(`Worker report ${index}.`)), diagnostics,
+    limits: { maxFinalValidationRepairCycles: limit, maxInferenceAttempts: 1, maxRecoveryAttempts: 1 } });
+  try {
+    await h.session._startRun({ messageType: 'user', prompt: 'Finish the task' });
+    assert.equal(h.seen.turns.length, limit + 1);
+    assert.equal(h.seen.diagnostics, limit + 1);
+    const repairs = entries(h.session, 'pi-sitter-project-diagnostic-retry');
+    assert.equal(repairs.length, limit);
+    assert.deepEqual(repairs.map(row => row.data.repairCount), Array.from({ length: limit }, (_, i) => i + 1));
+    const verdict = entries(h.session, verdictType).at(-1);
+    assert.equal(verdict.data.status, 'FAIL');
+    assert.equal(verdict.data.repairCount, limit);
+    assert.equal(verdict.data.repairLimit, limit);
+    assert.equal(verdict.data.failed, 1);
+    assert.deepEqual(verdict.data.failedIds, [`F-${limit}`]);
+    const historyCard = entries(h.session, 'pi-sitter-project-diagnostic').at(-1).data;
+    assert.equal(historyCard.history?.length ?? 0, limit - 1);
+    assert.equal(historyCard.followup.failures[0].id, `F-${limit}`);
+    assert.match(verdictText(h.session, verdict), new RegExp(`Final-validation repairs ${limit}/${limit}`));
+    await h.session._tryExecuteExtensionCommand('/sitter status');
+    assert.match(h.session.sessionManager.getBranch().at(-1).customType, /verdict/);
+    await h.session.extensionRunner.emit({ type: 'session_start', reason: 'resume' });
+    assert.equal(entries(h.session, verdictType).length, 1);
+    assert.equal(entries(h.session, 'pi-sitter-project-diagnostic-retry').length, limit);
+    const repeated = await h.session.extensionRunner.emitBoundary({ type: 'agent_before_settle',
+      outcome: 'completed' }, drafts => h.session._buildBoundaryContext(drafts, 'agent_before_settle'));
+    assert.equal(repeated.continue, false);
+    assert.equal(h.seen.diagnostics, limit + 1);
+    assert.equal(entries(h.session, verdictType).length, 1);
+  } finally { await h.close(); }
+});
+
+test('host diagnostic stops at an early pass or blocked result within the repair limit', async () => {
+  for (const final of [
+    { status: 'PASS', passed: 2, failed: 0, total: 2 },
+    { status: 'BLOCKED', passed: 0, failed: 0, total: 0, reason: 'Host runner unavailable' },
+  ]) {
+    const h = await nativeSession({ responses: [fauxAssistantMessage('First report.'), fauxAssistantMessage('Repair report.')],
+      diagnostics: [{ status: 'FAIL', passed: 1, failed: 1, total: 2,
+        failures: [{ id: 'F1', detail: 'Missing saved output' }] }, final],
+      limits: { maxFinalValidationRepairCycles: 10 } });
+    try {
+      await h.session._startRun({ messageType: 'user', prompt: 'Finish the task' });
+      assert.equal(h.seen.diagnostics, 2);
+      assert.equal(entries(h.session, 'pi-sitter-project-diagnostic-retry').length, 1);
+      const verdict = entries(h.session, verdictType)[0];
+      assert.equal(verdict.data.status, final.status);
+      assert.equal(verdict.data.repairCount, 1);
+    } finally { await h.close(); }
+  }
+});
+
+test('automatic protected final validation reaches its repair limit beyond recovery and verification budgets', async () => {
+  const h = await nativeSession({ responses: Array.from({ length: 4 }, (_, index) =>
+    fauxAssistantMessage(`Saved repair report ${index}.`)), protectedResults: ['FAIL', 'FAIL', 'FAIL', 'FAIL'],
+    limits: { maxFinalValidationRepairCycles: 3, maxRecoveryAttempts: 1,
+      maxCompletionVerifications: 1 } });
+  try {
+    await h.session._startRun({ messageType: 'user', prompt: 'Finish the task' });
+    assert.equal(h.seen.verifies, 4);
+    assert.equal(entries(h.session, 'pi-sitter-recovery').filter(row =>
+      row.data.delivery === 'committed_for_continuation').length, 3);
+    const completion = entries(h.session, 'pi-sitter-completion').at(-1).data;
+    assert.equal(completion.decision, 'BLOCKED');
+    assert.equal(completion.finalValidationRepairCount, 3);
+    assert.match(completion.reason, /1 protected gates still failing; IDs G1/);
+    assert.equal(entries(h.session, 'pi-sitter-verification').at(-1).data.gates[0].result, 'FAIL');
+  } finally { await h.close(); }
+});
+
 test('saved Stage 05 55/66 to 58/66 pattern ends after Worker claim with eight failed IDs', async () => {
   const failedIds = ['MD-METEOR-AREA-CONNECTION', 'MD-METEOR-STRUCK-ONCE',
     'MD-INVULNERABILITY-EXPIRES', 'MD-GAMEOVER-STATE', 'MD-GAMEOVER-STOP-SPAWN',
@@ -261,7 +352,8 @@ test('saved Stage 05 55/66 to 58/66 pattern ends after Worker claim with eight f
   const second = { id: 'stage05-repair', status: 'FAIL', suite: 'meteor-dodge-v1', passed: 58, failed: 8, total: 66,
     failures: failedIds.map(id => ({ id, detail: 'Saved check still fails' })) };
   const h = await nativeSession({ responses: [fauxAssistantMessage('Initial completion claim.'),
-    fauxAssistantMessage('Everything is fixed now.')], diagnostics: [first, second] });
+    fauxAssistantMessage('Everything is fixed now.')], diagnostics: [first, second],
+    limits: { maxFinalValidationRepairCycles: 1 } });
   try {
     await h.session._startRun({ messageType: 'user', prompt: 'Finish Stage 05' });
     const branch = h.session.sessionManager.getBranch();
@@ -410,7 +502,7 @@ test('host diagnostic shows pending immediately and discloses the exact repair p
   const failure = { status: 'FAIL', suite: 'fixture', passed: 0, failed: 1, total: 1,
     failures: [{ id: 'spawn-interval', detail: 'Spawn interval unavailable' }] };
   const h = await nativeSession({ responses: [fauxAssistantMessage('First report.'), fauxAssistantMessage('Repair report.')],
-    diagnostics: deferred });
+    diagnostics: deferred, limits: { maxFinalValidationRepairCycles: 1 } });
   let run;
   try {
     run = h.session._startRun({ messageType: 'user', prompt: 'Finish the task' });

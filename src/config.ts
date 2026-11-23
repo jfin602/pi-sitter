@@ -5,6 +5,7 @@ export interface PiSitterLimits {
   maxTriggers: number;
   maxRepeatedIneffectiveOps: number;
   maxRecoveryAttempts: number;
+  maxFinalValidationRepairCycles: number;
   maxCompletionVerifications: number;
   maxInputChars: number;
   maxOutputTokens: number;
@@ -19,6 +20,7 @@ const defaults: PiSitterLimits = {
   maxTriggers: 16,
   maxRepeatedIneffectiveOps: 2,
   maxRecoveryAttempts: 2,
+  maxFinalValidationRepairCycles: 2,
   maxCompletionVerifications: 5,
   maxInputChars: 5500,
   maxOutputTokens: 384,
@@ -45,6 +47,7 @@ export function piSitterLimits(raw = process.env.PI_SITTER_LIMITS): PiSitterLimi
       maxTriggers: Math.min(limits.maxTriggers, 32),
       maxRepeatedIneffectiveOps: Math.max(2, Math.min(limits.maxRepeatedIneffectiveOps, 5)),
       maxRecoveryAttempts: Math.min(limits.maxRecoveryAttempts, 3),
+      maxFinalValidationRepairCycles: Math.min(limits.maxFinalValidationRepairCycles, 10),
       maxCompletionVerifications: Math.min(limits.maxCompletionVerifications, 6),
       maxInputChars: Math.max(1500, Math.min(limits.maxInputChars, 6000)),
       maxOutputTokens: Math.max(256, Math.min(limits.maxOutputTokens, 512)),

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.5 — 2026-11-23 (configurable final-validation repairs)
+
+- Add a separate automatic final-validation repair limit, defaulting to 2 and configurable from 1 to 10 through `PI_SITTER_LIMITS` or injected limits.
+- Revalidate after each committed Worker repair, stop early on pass or blocked diagnostics, and record the repair count in status and validation history. Keep manual verification and host diagnostic status separate from protected acceptance.
+
 ## 0.2.4 — 2026-11-23 (terminal host validation verdict)
 
 - Append a distinct final host diagnostic verdict after the latest automatic check, with run identity, exact counts, failed IDs, and saved progress reference. Preserve the existing pending and detailed diagnostic card and the single repair continuation.
