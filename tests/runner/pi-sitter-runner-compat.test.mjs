@@ -20,12 +20,12 @@ test('Dope phase runner and validator stay byte-for-byte unchanged', async () =>
     assert.equal(digest, sha, filename);
   }
 });
-test('Pi Sitter manifest stays on a historical p1 checkpoint without a root package lock', async () => {
+test('Pi Sitter manifest stays on a historical p1 checkpoint or the owner milestone without a root package lock', async () => {
   const pkg = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
   assert.equal(pkg.name, 'pi-sitter');
   const plan = await livePlan();
-  assert.ok([roadmapVersionFor(plan, 0), ...plan.prompts.map(prompt => prompt.targetVersion)].includes(pkg.version),
-    `unexpected p1 checkpoint ${pkg.version}`);
+  const allowed = [roadmapVersionFor(plan, 0), ...plan.prompts.map(prompt => prompt.targetVersion), '0.2.0'];
+  assert.ok(allowed.includes(pkg.version), `unexpected package checkpoint ${pkg.version}`);
   assert.equal(pkg.pi.extensions[0], './src/index.ts');
   assert.equal(pkg.scripts['codex:phase'], 'node scripts/codex-phase.mjs');
   assert.equal(pkg.scripts['codex:phase:validate'], 'node scripts/validate-codex-phase.mjs');

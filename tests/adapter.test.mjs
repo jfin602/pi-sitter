@@ -228,8 +228,9 @@ test('accepted intervention renders muted immediately and completes the same pur
   assert.equal(click?.handled, true);
   const opened = clickable.render(80).join('\n');
   assert.match(opened, /Full prompt supplied to Worker/);
-  assert.match(opened, /> \[Pi Sitter guidance — extension generated/);
-  assert.match(opened, /> Suggested next action: Fix the preload string/);
+  assert.match(opened, /> \[Pi Sitter intervention — extension generated/);
+  assert.match(opened, /> Next: Fix the preload string/);
+  assert.equal(opened.match(/Full prompt supplied to Worker:/g)?.length, 1);
   assert.match(opened, /Click to show less/);
   assert.deepEqual(clickable.handleMouse({ type: 'click', button: 'left' }), { handled: true });
   assert.doesNotMatch(clickable.render(80).join('\n'), /Full prompt supplied to Worker/);
@@ -313,7 +314,7 @@ test('replayed intervention updates in place and unexpected terminal remains vis
     const entries = restored.entries.filter(entry => entry.customType === 'pi-sitter-intervention');
     const renderer = restored.entryRenderers.get('pi-sitter-intervention');
     const theme = { appearance: 'dark', style: text => text };
-    assert.match(renderer(entries[0], { expanded: false }, theme).render(80).join(''), /Preload path is invalid/);
+    assert.match(renderer(entries[0], { expanded: false }, theme).render(80).join(''), /Stop retrying project_scripts_get_parse_errors/);
     assert.equal(renderer(entries[1], { expanded: false }, theme), undefined);
     const orphan = { type: 'custom', customType: 'pi-sitter-intervention', data: {
       id: 'orphan', phase: 'completed', trigger: 'T1:orphan', stage: 'current', issue: 'Recovered result' } };
@@ -334,7 +335,7 @@ test('Active delivers once at natural tool continuation and suppresses duplicate
   assert.equal(delivery.entries.length, 1);
   assert.equal(delivery.entries[0].type, 'custom_message');
   assert.equal(delivery.entries[0].display, false);
-  assert.match(delivery.entries[0].content, /Pi Sitter guidance — extension generated, not a user request/);
+  assert.match(delivery.entries[0].content, /Pi Sitter intervention — extension generated, advisory/);
   assert.equal(delivery.continue, undefined);
   assert.equal(h.entries.filter(x => x.customType === 'pi-sitter-outcome').length, 1);
   assert.equal(h.entries.find(x => x.customType === 'pi-sitter-outcome').data.kind, 'delivered');
@@ -363,6 +364,106 @@ test('T4 includes the no-op receipt and recent Worker calls before Active delive
   assert.equal(observed.trigger.type, 'T4');
   assert.match(observed.recent.at(-1).result, /"changes":\[\]/);
   assert.equal(delivery.entries[0].customType, 'pi-sitter-advisory');
+});
+
+test('stage 04 unchanged scene-tree reads trigger one active inspection intervention', async () => {
+  const h = harness('active', async () => ({ kind: 'failed', reason: 'Supervisor unavailable', latencyMs: 1 }));
+  const name = 'mcp__godot__godot_inspection_get_scene_tree';
+  const result = { content: [{ type: 'text', text: JSON.stringify({ tree: { name: 'meteor',
+    type: 'Area2D', children: [{ name: 'Visual', type: 'Sprite2D' }] }, truncated: false }) }] };
+  let latest;
+  for (let n = 1; n <= 5; n++) {
+    const id = `scene-${n}`;
+    h.handlers.get('tool_execution_start')({ toolCallId: id, toolName: name, args: { lightweight: true } }, h.ctx);
+    h.handlers.get('tool_execution_end')({ toolCallId: id, toolName: name, result, isError: false }, h.ctx);
+    latest = { role: 'toolResult', toolCallId: id, toolName: name, content: result.content, isError: false };
+    assert.equal(h.entries.filter(entry => entry.customType === 'pi-sitter-event').length, n === 5 ? 1 : 0);
+  }
+  const delivery = await boundary(h, latest);
+  assert.equal(h.entries.find(entry => entry.customType === 'pi-sitter-event').data.type, 'T5');
+  assert.deepEqual(h.entries.filter(entry => entry.customType === 'pi-sitter-intervention').map(entry => entry.data.phase),
+    ['started', 'completed']);
+  assert.equal(delivery.entries[0].customType, 'pi-sitter-advisory');
+  assert.match(delivery.entries[0].content, /Stop calling .*godot_inspection_get_scene_tree/);
+  for (let n = 6; n <= 7; n++) {
+    const id = `scene-${n}`;
+    h.handlers.get('tool_execution_start')({ toolCallId: id, toolName: name, args: { lightweight: true } }, h.ctx);
+    h.handlers.get('tool_execution_end')({ toolCallId: id, toolName: name, result, isError: false }, h.ctx);
+  }
+  assert.equal(h.entries.filter(entry => entry.customType === 'pi-sitter-event').length, 1);
+  assert.ok(h.notices.some(([message]) => message.includes('loop unresolved')));
+});
+
+test('weak inspection advice becomes a concrete Worker command and the card quotes it once', async () => {
+  const weak = { issue: 'Worker is looping', evidence: '3 identical inspections of unchanged state during recovery',
+    next_action: 'Inspect the expected scene structure and current scripts to determine the issue',
+    confidence: 1, abstain: false };
+  const h = harness('active', async () => ({ kind: 'ready', diagnosis: weak, latencyMs: 1 }));
+  const emit = (name, id, args, body) => {
+    const result = { content: [{ type: 'text', text: JSON.stringify(body) }] };
+    h.handlers.get('tool_execution_start')({ toolCallId: id, toolName: name, args }, h.ctx);
+    h.handlers.get('tool_execution_end')({ toolCallId: id, toolName: name, result, isError: false }, h.ctx);
+    return { role: 'toolResult', toolCallId: id, toolName: name, content: result.content, isError: false };
+  };
+  emit('project_scripts_read', 'source', { script_path: 'src/main.ts' }, { content: 'saved source' });
+  emit('project_scene_edit_save_scene', 'preview', { dry_run: true },
+    { dry_run: true, saved: false, receipt: { status: 'noop', changes: [] } });
+  let last;
+  for (let i = 0; i < 3; i++) last = emit('project_scene_tree', `tree-${i}`, {}, { tree: { name: 'Main' } });
+  const delivery = await boundary(h, last);
+  const directive = delivery.entries[0].content;
+  assert.match(directive, /Stop calling project_scene_tree with \{\}/);
+  assert.match(directive, /Next: Read "src\/main.ts" with project_scripts_read/);
+  assert.doesNotMatch(directive, /Inspect the expected scene structure/);
+  const terminal = h.entries.filter(entry => entry.customType === 'pi-sitter-intervention').at(-1);
+  assert.equal(terminal.data.workerPrompt, directive);
+  assert.equal(terminal.data.source, 'fallback');
+  assert.match(terminal.data.rejectedResponses[0], /Inspect the expected scene structure/);
+  const renderer = h.entryRenderers.get('pi-sitter-intervention');
+  const theme = { appearance: 'dark', style: text => text };
+  const started = h.entries.find(entry => entry.customType === 'pi-sitter-intervention');
+  const collapsed = renderer(started, { expanded: false }, theme).render(62).join('\n');
+  assert.match(collapsed, /Stop calling project_scene_tree/);
+  assert.match(collapsed, /Next: Read "src\/main.ts"/);
+  const expanded = renderer(started, { expanded: true }, theme).render(62);
+  assert.ok(expanded.every(row => Array.from(row).length === 62));
+  assert.equal(expanded.filter(row => row.includes('> Next:')).length, 1);
+  assert.match(expanded.join('\n'), /Worker directive \(expanded below\)/);
+  assert.match(expanded.join('\n'), /Rejected supervisor response 1 \(not sent to Worker\)/);
+  const wideRows = renderer(started, { expanded: true }, theme).render(1000);
+  const quoteStart = wideRows.findIndex(row => row.includes('Full prompt supplied to Worker:'));
+  const promptRows = [];
+  for (const row of wideRows.slice(quoteStart + 1)) {
+    if (!row.startsWith(' > ')) break;
+    promptRows.push(row);
+  }
+  const unwrapped = promptRows.map(row => row.slice(3).trimEnd()).join('\n');
+  assert.equal(unwrapped, directive);
+  emit('project_scene_tree', 'post-1', {}, { tree: { name: 'Main' } });
+  emit('project_scene_tree', 'post-2', {}, { tree: { name: 'Main' } });
+  assert.ok(h.notices.some(([message]) => message.includes('loop unresolved')));
+});
+
+test('intervention labels an earlier host diagnostic stale after a saved update', async () => {
+  const h = harness('active', async () => ({ kind: 'failed', reason: 'Supervisor unavailable', latencyMs: 1 }),
+    [], undefined, { projectDiagnostic: async () => ({ status: 'FAIL', passed: 0, failed: 1, total: 1,
+      failures: [{ id: 'saved-script', detail: 'Main script=missing' }] }) });
+  const retry = await h.handlers.get('agent_before_settle')({ type: 'agent_before_settle',
+    outcome: 'completed', entries: [], continue: false }, h.ctx);
+  assert.match(retry.entries.at(-1).content, /saved-script: "Main script=missing"/);
+  const emit = (name, id, args, body) => {
+    const result = { content: [{ type: 'text', text: JSON.stringify(body) }] };
+    h.handlers.get('tool_execution_start')({ toolCallId: id, toolName: name, args }, h.ctx);
+    h.handlers.get('tool_execution_end')({ toolCallId: id, toolName: name, result, isError: false }, h.ctx);
+    return { role: 'toolResult', toolCallId: id, toolName: name, content: result.content, isError: false };
+  };
+  emit('project_scene_edit_save_scene', 'saved', {}, { saved: true, dry_run: false,
+    receipt: { status: 'updated', changes: [{ path: 'src/main.ts', op: 'set', before: null, after: null }] } });
+  let last;
+  for (let i = 0; i < 5; i++) last = emit('project_scene_tree', `stale-tree-${i}`, {}, { tree: { name: 'Main' } });
+  const delivery = await boundary(h, last);
+  assert.match(delivery.entries[0].content, /Earlier host diagnostic, before later saved changes/);
+  assert.match(delivery.entries[0].content, /saved-script: Main script=missing/);
 });
 
 test('deterministic no-op fallback steers only Active mode and stops at its own advisory budget', async () => {
@@ -547,17 +648,14 @@ test('Observer exception leaves finalized Worker result untouched', () => {
   assert.equal(h.entries.length, initialEntries);
 });
 
-test('startup announcement is muted, branch-deduplicated and no-tests mode does not attempt verification', async () => {
+test('startup has no announcement and no-tests mode does not attempt verification', async () => {
   const h = harness('active', async () => ready);
   const startup = h.entries.filter(entry => entry.customType === 'pi-sitter-startup');
-  assert.equal(startup.length, 1);
-  assert.match(startup[0].data.text, /Pi Sitter 0\.1\./);
-  assert.match(startup[0].data.text, /no-tests mode \(completion UNVERIFIED\)/);
-  const renderer = h.entryRenderers.get('pi-sitter-startup');
-  const rows = renderer(startup[0], {}, { fg: (tone, value) => `<${tone}>${value}</${tone}>` }).render(120);
-  assert.match(rows[0], /^<muted>Pi Sitter/);
+  assert.equal(startup.length, 0);
+  assert.equal(h.entries.filter(entry => entry.customType === 'pi-sitter-readiness').length, 0);
+  assert.equal(h.notices.length, 0);
   h.handlers.get('session_start')({ type: 'session_start', reason: 'resume' }, h.ctx);
-  assert.equal(h.entries.filter(entry => entry.customType === 'pi-sitter-startup').length, 1);
+  assert.equal(h.entries.filter(entry => entry.customType === 'pi-sitter-startup').length, 0);
   await h.commands.get('sitter').handler('verify', h.ctx);
   assert.ok(h.notices.some(([message]) => /no-tests mode/.test(message)));
   assert.equal(h.entries.filter(entry => entry.customType === 'pi-sitter-verification-attempt').length, 0);
@@ -565,7 +663,7 @@ test('startup announcement is muted, branch-deduplicated and no-tests mode does 
   assert.equal(h.sent.length, 0);
 });
 
-test('setup warning is visible at startup and host-only plan selection updates it without executing tests', async () => {
+test('host-only plan selection reports its result without startup setup notices or executing tests', async () => {
   let selected;
   const setup = { getSelectedPlanId: () => selected,
     selectApprovedPlan(id) { if (id !== 'approved-v1') throw new Error('Unknown host plan'); selected = id; },
@@ -573,25 +671,22 @@ test('setup warning is visible at startup and host-only plan selection updates i
   const h = harness('active', async () => ready, [], undefined, { verificationSetup: setup,
     resolveApprovedVerifier: () => undefined });
   const cards = () => h.entries.filter(entry => entry.customType === 'pi-sitter-readiness');
-  assert.equal(cards().length, 1);
-  assert.equal(cards()[0].data.status, 'NO_TESTS');
+  assert.equal(cards().length, 0);
   const renderer = h.entryRenderers.get('pi-sitter-readiness');
   const theme = { appearance: 'dark', style: text => text };
-  assert.match(renderer({ data: cards()[0].data }, { expanded: false }, theme).render(100).join('\n'), /NO_TESTS/);
-  assert.ok(h.notices.some(([message, level]) => level === 'warning' && /No-tests mode/.test(message)));
-  await h.commands.get('sitter').handler('setup', h.ctx);
-  assert.ok(h.notices.some(([message]) => /host outside Worker write access/.test(message)));
+  assert.equal(h.notices.length, 0);
+  assert.equal(h.commands.get('sitter').getArgumentCompletions('setup').length, 0);
   await h.commands.get('sitter').handler('use npm test', h.ctx);
   assert.equal(selected, undefined);
   await h.commands.get('sitter').handler('use missing', h.ctx);
   assert.equal(selected, undefined);
   await h.commands.get('sitter').handler('use approved-v1', h.ctx);
   assert.equal(selected, 'approved-v1');
-  assert.equal(cards().length, 2);
-  assert.equal(cards()[1].data.planId, 'approved-v1');
-  assert.match(renderer({ data: cards()[0].data }, { expanded: false }, theme).render(100).join('\n'), /HISTORICAL/);
+  assert.equal(cards().length, 1);
+  assert.equal(cards()[0].data.planId, 'approved-v1');
+  assert.match(renderer({ data: cards()[0].data }, { expanded: false }, theme).render(100).join('\n'), /NO TEST COMMAND/);
   h.handlers.get('session_start')({ type: 'session_start', reason: 'resume' }, h.ctx);
-  assert.equal(cards().length, 2);
+  assert.equal(cards().length, 1);
   assert.equal(h.entries.filter(entry => entry.customType === 'pi-sitter-verification-attempt').length, 0);
 });
 
@@ -701,6 +796,34 @@ test('T4 pins no-op and repeated recovery inspection thresholds and progress res
   assert.equal(recovering.observe(inspection), undefined);
   recovering.observe(progress());
   assert.equal(recovering.observe(inspection), undefined);
+});
+
+test('T5 counts only consecutive identical successful inspections before recovery', () => {
+  const read = (name = 'mcp__godot__godot_inspection_get_scene_tree', body = { tree: 'meteor' }) =>
+    observation(name, { lightweight: true }, body);
+  const engine = new PiSitterEngine('active');
+  for (let n = 0; n < 4; n++) assert.equal(engine.observe(read()), undefined);
+  assert.equal(engine.observe(read('mcp__godot__godot_inspection_get_scene_tree', { tree: 'main' })), undefined);
+  for (let n = 0; n < 4; n++) assert.equal(engine.observe(read()), undefined);
+  assert.equal(engine.observe(read())?.type, 'T5');
+  assert.equal(engine.observe(read()), undefined);
+  engine.observe(progress());
+  for (let n = 0; n < 4; n++) assert.equal(engine.observe(read()), undefined);
+  assert.equal(engine.observe(read())?.type, 'T5');
+  const recovering = new PiSitterEngine('active');
+  recovering.observe(observation('project_scene_edit_set_node_property', { node: 'Player' },
+    { receipt: { status: 'noop', changes: [] } }));
+  assert.equal(recovering.observe(read()), undefined);
+  assert.equal(recovering.observe(read()), undefined);
+  assert.equal(recovering.observe(read())?.type, 'T4');
+  const long = new PiSitterEngine('active');
+  const prefix = 'x'.repeat(4200);
+  for (let n = 0; n < 4; n++) assert.equal(long.observe(read(undefined, `${prefix}a`)), undefined);
+  assert.equal(long.observe(read(undefined, `${prefix}b`)), undefined);
+  for (let n = 0; n < 3; n++) assert.equal(long.observe(read(undefined, `${prefix}b`)), undefined);
+  assert.equal(long.observe(read(undefined, `${prefix}b`))?.type, 'T5');
+  const off = new PiSitterEngine('off');
+  for (let n = 0; n < 6; n++) assert.equal(off.observe(read()), undefined);
 });
 
 test('tool classifiers retain current aliases and plain-text uncertainty', () => {

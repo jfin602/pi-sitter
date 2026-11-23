@@ -16,6 +16,20 @@ function argumentsOf(event: ToolObservation | undefined): Record<string, unknown
 }
 
 export function genericFallback(trigger: Trigger, recent: readonly ToolObservation[]): Diagnosis | undefined {
+  if (trigger.type === 'T4' && /identical inspections of unchanged state during recovery/i.test(trigger.evidence)) return {
+    issue: 'Repeated inspection returned the same state during recovery',
+    evidence: 'identical inspections of unchanged state during recovery',
+    next_action: 'Stop repeating this read. Use a distinct observed read of the saved target, or report the blocker.',
+    confidence: 0.95,
+    abstain: false,
+  };
+  if (trigger.type === 'T5') return {
+    issue: 'Repeated inspection returned the same project state',
+    evidence: 'identical inspections of unchanged state without progress',
+    next_action: 'Stop repeating this read. Inspect a different task-relevant source or scene, then make a focused change or report what remains blocked.',
+    confidence: 0.95,
+    abstain: false,
+  };
   if (trigger.type === 'T1' && trigger.tool === 'edit' &&
       /No changes made to .+?\. The replacement produced identical content\./i.test(trigger.evidence)) {
     return {

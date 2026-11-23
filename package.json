@@ -1,6 +1,6 @@
 {
   "name": "pi-sitter",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "description": "An on-demand AI supervisor for the Pi Coding Agent",
   "type": "module",
   "license": "MIT",

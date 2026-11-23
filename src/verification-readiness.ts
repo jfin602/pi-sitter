@@ -8,6 +8,29 @@ export interface VerificationReadiness {
   summary: string;
 }
 
+export interface TestCommandNotice {
+  status: string;
+  summary: string;
+  warning: boolean;
+}
+
+/** Startup reports command discovery; final validation has its own evidence status. */
+export function testCommandNotice(readiness: VerificationReadiness): TestCommandNotice {
+  if (readiness.status === 'BLOCKED')
+    return { status: 'SETUP BLOCKED', summary: readiness.summary, warning: true };
+  if (readiness.candidate.kind === 'candidate') {
+    const candidate = readiness.candidate;
+    return { status: 'TEST COMMAND FOUND',
+      summary: `Found ${candidate.command}${candidate.tool ? ` (${candidate.tool})` : ''} in ${candidate.source}. Command discovery does not run tests.`,
+      warning: false };
+  }
+  if (readiness.status === 'READY')
+    return { status: 'HOST TEST PLAN READY', summary: 'The host has an approved test plan ready for final validation.', warning: false };
+  if (readiness.candidate.kind === 'unknown')
+    return { status: 'TEST COMMAND UNKNOWN', summary: `Could not determine the project test command: ${readiness.candidate.reason}.`, warning: true };
+  return { status: 'NO TEST COMMAND', summary: 'No project test command found. Use /sitter status to inspect test setup.', warning: true };
+}
+
 export interface VerificationReadinessInput {
   candidate: TestDiscovery;
   controller: boolean;
@@ -51,6 +74,6 @@ export function assessVerificationReadiness(input: VerificationReadinessInput): 
     status === 'CONFIGURED' ? `Verifier callbacks are configured; host preflight has not attested the plan and source. ${candidate}` :
       status === 'BLOCKED' ? `Verification configuration blocked: ${input.configurationError!.slice(0, 180)}. ${candidate}` :
         status === 'NO_TESTS' ? `No-tests mode; completion remains UNVERIFIED. ${candidate}` :
-          `Protected verification unavailable: missing ${missing.join(', ')}. ${candidate} Run /sitter setup before relying on final validation.`;
+          `Protected verification unavailable: missing ${missing.join(', ')}. ${candidate} Use /sitter status for details.`;
   return { status, candidate: input.candidate, planId: input.planId, missing, summary };
 }

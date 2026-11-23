@@ -1,6 +1,8 @@
 # Verification readiness before Worker execution
 
-**Status:** Source readiness UI and host plan selection implemented on 2026-11-22; benchmark host integration and protected native qualification remain open. Package version remains `0.1.9`; no release action is implied.
+**Superseded startup behavior (2026-11-22):** The owner removed `/sitter setup` and the new-session readiness announcement. A discovered project test command remains informational. The embedding host may supply a diagnostic callback that Pi Sitter runs at completion for bounded repair guidance; only the approved verifier can authorize protected gates. The prior design and evidence below remain as history.
+
+**Status:** Source readiness UI and host plan selection implemented on 2026-11-22. Startup messaging now reports test-command discovery separately from final validation. Benchmark host integration and protected native qualification remain open. Package version remains `0.1.9`; no release action is implied.
 
 ## Observed gap
 
@@ -8,7 +10,7 @@ The original gap was a muted startup entry followed by a visible UNAVAILABLE car
 
 ## Desired behavior
 
-1. Before the first Worker model call, Pi Sitter displays a **visible, actionable** readiness card: configured and ready, discovered development test candidate with protected verification missing, no tests discovered, or invalid/blocked host configuration. `/sitter setup` and `/sitter status` show the same current facts. A session replay does not duplicate the card or present a historical ready state as current.
+1. Before the first Worker model call, Pi Sitter displays a **visible, actionable** test-command card: command found, no command found, uncertain discovery, host plan ready, or blocked configuration. A found command is informational rather than a startup warning. `/sitter setup` also explains final validation readiness separately. A session replay does not duplicate the card or present a historical ready state as current.
 2. Discovery reports the package manager, the bounded literal `scripts.test` value, and a recognized tool such as Vitest when identifiable without running project code. It remains informational. An unknown script is labeled unknown rather than guessed. Worker-authored tests, scripts and result files cannot become protected acceptance evidence by discovery or by a Worker message.
 3. An embedding host can supply a **host-owned approved plan registry**. A user may select an existing plan ID through `/sitter use <plan-id>` only if the host exposes a trusted selection callback. The command accepts no executable path, shell string, flags or test-file path. It revalidates the selected plan, controller inventory, suite digest, source-snapshot facility, runner isolation and requirement-review capability at session start and before every run. Without that host callback, `/sitter use` explains that setup belongs in the host launcher; it does not write a worker-editable config file.
 4. A host can mark protected verification **required** for a run. The benchmark launcher must call the same readiness check during `--check` and before starting Pi; missing or invalid dependencies stop that launch with a specific remedy. Ordinary standalone Pi Sitter remains advisory: no-tests projects and users without a controller receive an early warning, retain existing supervisor triggers, and finish UNVERIFIED rather than being blocked from unrelated work.
@@ -19,7 +21,7 @@ The original gap was a muted startup entry followed by a visible UNAVAILABLE car
 ### A. Readiness model and UI
 
 - Add a small `VerificationReadiness` result that distinguishes **discovered candidate**, **approved plan selected**, **controller inventory valid**, **runner available**, **source/suite identity attestable**, and **requirement review available**. Keep discovery separate from approval.
-- Evaluate it on `session_start`, after a trusted host plan change, and before a new user task. Render one prominent warning card and `ctx.ui.notify(..., 'warning')` when protected verification is unavailable in active/shadow mode. Include the detected candidate and `/sitter setup` as the next action. Preserve the existing terminal UNAVAILABLE card so a missed warning cannot look like a pass.
+- Evaluate it on `session_start`, after a trusted host plan change, and before a new user task. Show a prominent informational card for a found test command; warn when command discovery fails or configuration is blocked. Preserve the terminal unavailable result when no approved verifier ran, so discovery cannot look like a passing result.
 - Make replay cards historical; recheck live host dependencies and show a fresh warning only if readiness changed or a new session begins. Keep a bounded session-local signature to avoid repeated warnings.
 - Add `/sitter setup` as a read-only explanation of current readiness and missing host pieces. Extend `/sitter status` with a short readiness summary. Show `no-tests` distinctly from “tests discovered, no protected verifier.”
 

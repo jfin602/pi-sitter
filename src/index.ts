@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, Theme, ToolExecutionEndEvent } from '@earendil-works/pi-coding-agent';
 import { randomUUID } from 'node:crypto';
-import { PiSitterEngine, classifyObservation, operationSignature, type Trigger, type PiSitterMode, type Validator } from './core.ts';
+import { PiSitterEngine, classifyObservation, operationSignature, resultFingerprint, type Trigger, type PiSitterMode, type Validator } from './core.ts';
 import { piSitterLimits, type PiSitterLimits } from './config.ts';
 import { parseDiagnosis, runInference, type Diagnosis, type InferenceOutcome, type LoadedCheck } from './inference.ts';
 import { genericFallback, type FallbackProvider } from './fallback.ts';
@@ -18,10 +18,13 @@ import { buildPrompt, type PromptBuilder } from './prompt.ts';
 import { configuredVerifier } from './verifier.ts';
 import type { ApprovedVerifier } from './verifier.ts';
 import { checkpointContext, selectCheckpoint, type CheckpointRequest } from './checkpoints.ts';
-import { discoverProjectTestCommand, installedPiSitterVersion, type TestDiscovery } from './test-discovery.ts';
-import { approvedPlanId, assessVerificationReadiness, configuredPlanId,
+import { discoverProjectTestCommand, type TestDiscovery } from './test-discovery.ts';
+import { approvedPlanId, assessVerificationReadiness, configuredPlanId, testCommandNotice,
   type VerificationReadiness } from './verification-readiness.ts';
 import { InterventionLifecycle, type InterventionEvent } from './intervention-lifecycle.ts';
+import { buildWorkerDirective, conciseDiagnosticFailures, isInspectionLoop, triggerObservation, weakLoopAction,
+  type DiagnosticEvidence } from './intervention-directive.ts';
+import { buildProjectDiagnosticPrompt } from './project-diagnostic-prompt.ts';
 
 const STATUS_KEY = 'pi-sitter-status';
 const WIDGET_KEY = 'pi-sitter-panel';
@@ -50,8 +53,27 @@ const STARTUP_TYPE = 'pi-sitter-startup';
 const READINESS_TYPE = 'pi-sitter-readiness';
 const EMPTY_FINAL_TYPE = 'pi-sitter-empty-final';
 const EMPTY_FINAL_MESSAGE_TYPE = 'pi-sitter-empty-final-followup';
+const PROJECT_DIAGNOSTIC_TYPE = 'pi-sitter-project-diagnostic';
+const PROJECT_DIAGNOSTIC_PENDING_TYPE = 'pi-sitter-project-diagnostic-pending';
+const PROJECT_DIAGNOSTIC_RETRY_TYPE = 'pi-sitter-project-diagnostic-retry';
 const MAX_NO_PROGRESS_RETRIES = 1;
 interface EmptyFinalEntry { stage: string; messageEntryId: string; phase: 'continuing' | 'stopped' }
+export interface ProjectDiagnosticResult {
+  status: 'PASS' | 'FAIL' | 'BLOCKED';
+  suite?: string;
+  passed: number;
+  failed: number;
+  total: number;
+  failures?: { id: string; detail: string }[];
+  reason?: string;
+}
+type ProjectDiagnosticCard = ProjectDiagnosticResult & {
+  stage: string;
+  progressVersion?: number;
+  displayId?: string;
+  workerPrompt?: string;
+  previousWorkerPrompt?: string;
+};
 type RecoveryEntry = { attempt: number; plan: RecoveryPlan; delivery: string; retry?: number; displayId?: string };
 type RecoveryRequest = { id: string; stage: string; reset: boolean; unavailable?: string };
 
@@ -95,12 +117,17 @@ function supervisorCard(theme: Theme, card: SupervisorCard, width: number): stri
     ...(card.hint ? [{ text: '' }, { text: ` ${card.hint}`, kind: 'hint' as const }] : []),
   ];
   const wrapped = rows.flatMap(row => row.text.split('\n').flatMap(text => {
-    const chars = Array.from(text);
     const parts: typeof rows = [];
-    for (let offset = 0; offset < chars.length; offset += width) {
-      parts.push({ text: chars.slice(offset, offset + width).join(''), kind: row.kind });
+    let chars = Array.from(text);
+    while (chars.length > width) {
+      let breakAt = chars.slice(0, width).lastIndexOf(' ');
+      if (breakAt < 1) breakAt = width;
+      else breakAt++;
+      parts.push({ text: chars.slice(0, breakAt).join(''), kind: row.kind });
+      chars = chars.slice(breakAt);
     }
-    return parts.length ? parts : [{ text: '', kind: row.kind }];
+    parts.push({ text: chars.join(''), kind: row.kind });
+    return parts;
   }));
   return [spacer, ...wrapped.map(row => {
     const padding = ' '.repeat(width - Array.from(row.text).length);
@@ -169,16 +196,13 @@ export interface PiSitterDependencies {
   completionReady?: (completedToolNames: readonly string[], activeToolNames: readonly string[]) => string | undefined;
   promptBuilder?: PromptBuilder;
   fallback?: FallbackProvider;
+  /** Host-run project diagnostic. Its result guides repair but never authorizes protected gates. */
+  projectDiagnostic?: (stage: string, projectRoot: string, signal: AbortSignal) => Promise<ProjectDiagnosticResult>;
 }
 
 function initialMode(): PiSitterMode {
   return process.env.PI_SITTER_MODE === 'active' ? 'active'
     : process.env.PI_SITTER_MODE === 'shadow' ? 'shadow' : 'off';
-}
-
-function advisoryText(trigger: Trigger, outcome: InferenceOutcome): string {
-  const diagnosis = outcome.diagnosis!;
-  return `[Pi Sitter guidance — extension generated, not a user request; verify before acting]\nIssue: ${diagnosis.issue}\nEvidence: ${diagnosis.evidence}\nSuggested next action: ${diagnosis.next_action}\nConfidence: ${diagnosis.confidence.toFixed(2)}\nTrigger: ${trigger.type}`;
 }
 
 async function withAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -190,6 +214,23 @@ async function withAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   });
   try { return await Promise.race([work, canceled]); }
   finally { if (onAbort) signal.removeEventListener('abort', onAbort); }
+}
+
+function boundedProjectDiagnostic(value: ProjectDiagnosticResult): ProjectDiagnosticResult {
+  if (!value || !['PASS', 'FAIL', 'BLOCKED'].includes(value.status) ||
+      ![value.passed, value.failed, value.total].every(n => Number.isInteger(n) && n >= 0 && n <= 100_000) ||
+      value.passed + value.failed > value.total ||
+      value.status === 'PASS' && (value.failed !== 0 || value.total === 0 || value.passed !== value.total) ||
+      value.status === 'FAIL' && value.failed === 0)
+    throw new Error('Host diagnostic returned an invalid result');
+  return { status: value.status, suite: typeof value.suite === 'string' ? value.suite.slice(0, 120) : undefined,
+    passed: value.passed, failed: value.failed, total: value.total,
+    failures: Array.isArray(value.failures) ? [...value.failures].sort((a, b) =>
+      Number(/\b(?:missing|saved|container|script=|root=|not found|does not exist)/i.test(b.detail)) -
+      Number(/\b(?:missing|saved|container|script=|root=|not found|does not exist)/i.test(a.detail)))
+      .slice(0, 20).map(row => ({
+      id: String(row.id).slice(0, 160), detail: String(row.detail).slice(0, 600) })) : [],
+    reason: typeof value.reason === 'string' ? value.reason.slice(0, 800) : undefined };
 }
 
 export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: ExtensionAPI) => void {
@@ -207,6 +248,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     let controller: AbortController | undefined;
     let verificationController: AbortController | undefined;
     let analysisController: AbortController | undefined;
+    let projectDiagnosticController: AbortController | undefined;
     let lastReport: GateReport | undefined;
     let controllerContext: ControllerContext | undefined;
     let lastCompletion: CompletionRecord | undefined;
@@ -220,8 +262,13 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     let emptyFinalContinuationIssued = false;
     let emptyFinalTerminalIssued = false;
     let unavailableAtCompletionIssued = false;
+    let projectDiagnosticRetryIssued = false;
+    let lastProjectDiagnosticPrompt: string | undefined;
+    let lastDiagnostic: DiagnosticEvidence | undefined;
     const handledEmptyFinalMessages = new Set<string>();
     const verificationCards = new Map<string, CompletionRecord | 'interrupted' | undefined>();
+    const diagnosticCards = new Map<string, ProjectDiagnosticCard | 'interrupted' | undefined>();
+    let pendingDiagnosticId: string | undefined;
     let pendingVerificationId: string | undefined;
     const recoveryCards = new Map<string, RecoveryEntry | 'interrupted' | undefined>();
     let recoveryPlan: RecoveryPlan | undefined;
@@ -255,6 +302,8 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     let lastAdviceEpoch: number | undefined;
     let lastAdviceTool: string | undefined;
     let lastAdviceOperation: string | undefined;
+    let lastAdviceInspectionReceipt: string | undefined;
+    let lastObservedResultFingerprint: string | undefined;
     let repeatedAfterAdvice = 0;
     let lastRejectedReason = '';
     let abstained = 0;
@@ -278,6 +327,9 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       emptyFinalContinuationIssued = false;
       emptyFinalTerminalIssued = false;
       unavailableAtCompletionIssued = false;
+      projectDiagnosticRetryIssued = false;
+      lastProjectDiagnosticPrompt = undefined;
+      lastDiagnostic = undefined;
       handledEmptyFinalMessages.clear();
     }
 
@@ -324,13 +376,14 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       if (ctx.sessionManager.getBranch().some(entry => entry.type === 'custom' &&
           entry.customType === READINESS_TYPE && (entry.data as { signature?: string } | undefined)?.signature === signature)) return;
       pi.appendEntry(READINESS_TYPE, { signature, stage: engine.stage, ...value });
-      if (ctx.hasUI && value.status !== 'READY') ctx.ui.notify(value.summary, 'warning');
+      const notice = testCommandNotice(value);
+      if (ctx.hasUI && notice.warning) ctx.ui.notify(notice.summary, 'warning');
     }
 
     function unavailableAtCompletionReason(): string {
       const candidate = testDiscovery.kind === 'candidate' ?
-        ` Discovered ${testDiscovery.command} is informational and was not run or approved as a protected acceptance suite.` : '';
-      return `Protected final verification unavailable: the host has not configured a trusted controller and approved verifier.${candidate}`;
+        ` Found ${testDiscovery.command}, but Pi Sitter did not run it as final validation.` : '';
+      return `Final test result unavailable: the host has not configured an approved verifier.${candidate} No passing result was recorded.`;
     }
 
     function beginPendingVerification(ctx: ExtensionContext): void {
@@ -465,13 +518,13 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     function refreshTestDiscovery(ctx: ExtensionContext): void {
       testDiscovery = discoverProjectTestCommand(ctx.cwd);
       noTestsMode = testDiscovery.kind === 'none' && !controllerContext &&
-        !verifierRequested();
+        !verifierRequested() && !dependencies.projectDiagnostic;
     }
 
     function testSetupSummary(): string {
       if (noTestsMode) return 'No test command found in known manifests; no-tests mode (completion UNVERIFIED)';
       if (testDiscovery.kind === 'candidate')
-        return `Project test candidate: ${testDiscovery.command} (${testDiscovery.source}; not approved for verification)`;
+        return `Test command found: ${testDiscovery.command} (${testDiscovery.source}; not run by Pi Sitter)`;
       if (testDiscovery.kind === 'unknown') return `Test setup undetermined: ${testDiscovery.reason}`;
       return 'No project test command found; host verification may still be available';
     }
@@ -518,7 +571,8 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     function startIntervention(trigger: Trigger): string {
       const id = randomUUID();
       const event: InterventionEvent = { id, phase: 'started', trigger: trigger.key, stage: engine.stage,
-        description: trigger.type === 'T4' ? 'Investigating repeated ineffective operation…' :
+        description: trigger.type === 'T5' ? 'Investigating repeated unchanged inspections…' :
+          trigger.type === 'T4' ? 'Investigating repeated ineffective operation…' :
           trigger.type === 'T3' ? 'Investigating saved project state…' :
           trigger.type === 'T2' ? 'Investigating repeated setup calls…' : 'Investigating repeated tool failure…' };
       interventions.apply(event);
@@ -530,7 +584,8 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
       outcome: InferenceOutcome, source?: OutcomeEntry['source'], delivered = false, workerPrompt?: string): void {
       const event: InterventionEvent = { id, phase, trigger: trigger.key, stage: engine.stage,
         issue: outcome.diagnosis?.issue, evidence: outcome.diagnosis?.evidence,
-        nextAction: outcome.diagnosis?.next_action, reason: outcome.reason, source, delivered,
+        nextAction: outcome.diagnosis?.next_action, confidence: outcome.diagnosis?.confidence,
+        reason: outcome.reason, source, delivered,
         workerPrompt, rejectedResponses: outcome.rejectedResponses };
       if (interventions.apply(event)) try { pi.appendEntry(INTERVENTION_TYPE, event); }
       catch { /* A transcript write failure must not change Worker control. */ }
@@ -802,19 +857,66 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         return lines;
       }, invalidate() {} };
     });
-    pi.registerEntryRenderer<{ signature: string; stage: string; status: VerificationReadiness['status']; summary: string;
-      missing: string[] }>(READINESS_TYPE, (entry, { expanded }, theme) => {
+    pi.registerEntryRenderer<VerificationReadiness & { signature: string; stage: string }>(READINESS_TYPE, (entry, { expanded }, theme) => {
       const value = entry.data;
       if (!value?.signature) return;
       return { render(width: number) {
         const current = value.signature === readinessSignature;
+        const notice = value.candidate ? testCommandNotice(value) : undefined;
         return supervisorCard(theme, { stage: value.stage,
-          status: current ? value.status : 'HISTORICAL',
-          summary: current ? value.summary : 'Historical setup status; current host configuration must be checked again',
-          details: current && expanded ? value.missing.map(item => `Missing: ${item}`) : [],
-          tone: current && value.status === 'READY' ? 'normal' : current && value.status === 'NO_TESTS' ? 'pending' : 'failure',
+          status: current ? notice?.status ?? value.status : 'HISTORICAL',
+          summary: current ? notice?.summary ?? value.summary : 'Historical setup status; current host configuration must be checked again',
+          details: current && expanded ? [
+            `Final validation: ${value.status === 'READY' ? 'ready' : value.status === 'CONFIGURED' ? 'host preflight pending' : 'unavailable'}`,
+            ...value.missing.map(item => `Missing: ${item}`)] : [],
+          tone: current && notice?.warning ? 'failure' : current ? 'normal' : 'pending',
         }, width);
       }, invalidate() {} };
+    });
+    function diagnosticCard(getState: () => ProjectDiagnosticCard | 'interrupted' | undefined,
+      stage: string, isRunning: () => boolean, expanded: boolean, theme: Theme) {
+      let open = expanded;
+      return { render(width: number) {
+        const result = getState();
+        if (!result || result === 'interrupted') return supervisorCard(theme, { stage,
+          status: isRunning() ? 'DIAGNOSTIC RUNNING' : 'DIAGNOSTIC INTERRUPTED',
+          summary: isRunning() ? 'Checking the saved project…' : 'Diagnostic ended before a result was returned',
+          tone: isRunning() ? 'pending' : 'failure',
+        }, width);
+        const label = result.suite ? `${result.suite}: ` : '';
+        const prompt = result.workerPrompt ?? result.previousWorkerPrompt;
+        const hasMore = !!prompt || !!result.failures?.length;
+        return supervisorCard(theme, { stage: result.stage,
+          status: `DIAGNOSTIC ${result.status}`,
+          summary: result.status === 'BLOCKED' ? `${label}${result.reason ?? 'Test diagnostic could not run'}` :
+            `${label}${result.passed}/${result.total} tests passed. This result guides repair; it does not certify completion.`,
+          details: open ? [
+            ...conciseDiagnosticFailures(result.failures ?? [], 12),
+            ...(prompt ? [result.workerPrompt ? 'Full prompt supplied to Worker after this diagnostic:' :
+              'Full prompt supplied to Worker after the previous diagnostic (none sent after this result):',
+              ...quotedText(prompt)] : []),
+          ] : [],
+          hint: hasMore ? `Click to show ${open ? 'less' : 'more'}` : undefined,
+          tone: result.status === 'PASS' ? 'normal' : 'failure',
+        }, width);
+      }, invalidate() {}, handleMouse(event: { type: string; button?: string }) {
+        const result = getState();
+        if (event.type !== 'click' || event.button !== 'left' || !result || result === 'interrupted' ||
+            (!result.workerPrompt && !result.previousWorkerPrompt && !result.failures?.length)) return;
+        open = !open;
+        return { handled: true };
+      } };
+    }
+    pi.registerEntryRenderer<{ id: string; stage: string }>(PROJECT_DIAGNOSTIC_PENDING_TYPE, (entry, { expanded }, theme) => {
+      const value = entry.data;
+      if (!value?.id) return;
+      return diagnosticCard(() => diagnosticCards.get(value.id), value.stage,
+        () => pendingDiagnosticId === value.id, expanded, theme);
+    });
+    pi.registerEntryRenderer<ProjectDiagnosticCard>(PROJECT_DIAGNOSTIC_TYPE, (entry, { expanded }, theme) => {
+      const value = entry.data;
+      if (!value || (value.displayId && diagnosticCards.has(value.displayId))) return;
+      return diagnosticCard(() => value, value.stage, () => false, expanded, theme);
     });
     pi.registerEntryRenderer<OutcomeEntry>(OUTCOME_TYPE, (entry, { expanded }, theme) => {
       const data = entry.data;
@@ -841,15 +943,22 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         const summary = pending ? `${state.description ?? 'Investigating trigger…'} ◌` :
           state.phase === 'failed' || state.phase === 'cancelled' ?
             state.reason ?? state.issue ?? 'Supervision ended without a result' :
-            state.issue ?? state.reason ?? 'No diagnosis returned';
+            open && state.workerPrompt ? 'Worker directive (expanded below)' :
+              state.workerPrompt?.split('\n')[1] ?? state.nextAction ?? state.issue ?? state.reason ?? 'No diagnosis returned';
         return supervisorCard(theme, { stage: state.stage,
           status: pending ? 'INVESTIGATING' : state.phase === 'completed' ?
             state.delivered ? 'GUIDANCE' : 'DIAGNOSED' : state.phase.toUpperCase(),
           summary,
-          details: !pending ? [state.nextAction && `Next: ${state.nextAction}`,
-            open && state.evidence && `Evidence: ${state.evidence}`,
-            open && state.reason && `Outcome: ${state.reason}`,
+          details: !pending ? [
+            !open && state.workerPrompt?.split('\n').find(line => line.startsWith('Next: ')),
             ...(open && state.workerPrompt ? ['Full prompt supplied to Worker:', ...quotedText(state.workerPrompt)] : []),
+            open && state.issue && `Issue: ${state.issue}`,
+            open && state.evidence && `Evidence: ${state.evidence}`,
+            open && state.confidence !== undefined && `Confidence: ${state.confidence.toFixed(2)}`,
+            open && state.nextAction && !state.workerPrompt?.includes(`Next: ${state.nextAction}`) &&
+              `Diagnostic suggestion (not sent verbatim): ${state.nextAction}`,
+            open && `Trigger: ${state.trigger.split(':')[0]}`,
+            open && state.reason && `Outcome: ${state.reason}`,
             ...(open ? (state.rejectedResponses ?? []).flatMap((response, index) =>
               [`Rejected supervisor response ${index + 1} (not sent to Worker):`, ...quotedText(response)]) : [])]
             .filter((value): value is string => !!value) : [],
@@ -866,7 +975,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     pi.registerMessageRenderer(ADVISORY_TYPE, (message, _options, theme) => ({
       render(width: number) {
         const lines = (typeof message.content === 'string' ? message.content : '').split('\n');
-        if (lines[0]?.startsWith('[Pi Sitter guidance')) lines.shift();
+        if (lines[0]?.startsWith('[Pi Sitter guidance') || lines[0]?.startsWith('[Pi Sitter intervention')) lines.shift();
         return supervisorCard(theme, { status: 'GUIDANCE', summary: lines.shift() ?? 'Supervisor guidance', details: lines }, width);
       }, invalidate() {},
     }));
@@ -1003,6 +1112,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         controller?.abort(new Error('Pi Sitter session changed'));
         verificationController?.abort(new Error('Pi Sitter session changed'));
         analysisController?.abort(new Error('Pi Sitter session changed'));
+        projectDiagnosticController?.abort(new Error('Pi Sitter session changed'));
         stopUI();
         engine.reset(initialMode());
         view.reset();
@@ -1015,11 +1125,14 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         controller = undefined;
         verificationController = undefined;
         analysisController = undefined;
+        projectDiagnosticController = undefined;
         lastReport = undefined;
         controllerContext = undefined;
         lastCompletion = undefined;
         verificationCards.clear();
         pendingVerificationId = undefined;
+        diagnosticCards.clear();
+        pendingDiagnosticId = undefined;
         recoveryCards.clear();
         recoveryPlan = undefined;
         recoveryAttempts = 0;
@@ -1032,6 +1145,9 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         emptyFinalContinuationIssued = false;
         emptyFinalTerminalIssued = false;
         unavailableAtCompletionIssued = false;
+        projectDiagnosticRetryIssued = false;
+        lastProjectDiagnosticPrompt = undefined;
+        lastDiagnostic = undefined;
         selectedPlanId = undefined;
         readinessState = undefined;
         readinessSignature = '';
@@ -1049,6 +1165,8 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         lastAdviceEpoch = undefined;
         lastAdviceTool = undefined;
         lastAdviceOperation = undefined;
+        lastAdviceInspectionReceipt = undefined;
+        lastObservedResultFingerprint = undefined;
         repeatedAfterAdvice = 0;
         lastRejectedReason = '';
         awaitingContext.clear();
@@ -1071,6 +1189,16 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
               if (saved.phase === 'stopped') emptyFinalTerminalIssued = true;
             }
           }
+          if (entry.customType === PROJECT_DIAGNOSTIC_RETRY_TYPE && entry.data && typeof entry.data === 'object' &&
+              (entry.data as { stage?: string }).stage === stage) projectDiagnosticRetryIssued = true;
+          if (entry.customType === PROJECT_DIAGNOSTIC_TYPE && entry.data && typeof entry.data === 'object') {
+            const saved = entry.data as ProjectDiagnosticCard;
+            if (saved.stage === stage && saved.displayId) diagnosticCards.set(saved.displayId, saved);
+            if (saved.stage === stage && saved.workerPrompt) lastProjectDiagnosticPrompt = saved.workerPrompt;
+            if (saved.stage === stage && saved.status === 'FAIL') lastDiagnostic = { stage,
+              failed: saved.failed, total: saved.total, failures: saved.failures ?? [],
+              progressVersion: saved.progressVersion ?? -1 };
+          }
           if (entry.customType === INTERVENTION_TYPE && entry.data && typeof entry.data === 'object')
             interventions.apply(entry.data as InterventionEvent);
           if (entry.customType === EVENT_TYPE && entry.data && typeof entry.data === 'object') engine.restoreTrigger(entry.data as Trigger);
@@ -1090,7 +1218,8 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           }
           if (entry.customType === VERIFICATION_PENDING_TYPE && entry.data && typeof entry.data === 'object') {
             const saved = entry.data as { id?: string; stage?: string; unavailable?: string };
-            if (saved.stage === stage && saved.unavailable?.startsWith('Protected final verification unavailable:'))
+            if (saved.stage === stage && (saved.unavailable?.startsWith('Final test result unavailable:') ||
+              saved.unavailable?.startsWith('Protected final verification unavailable:')))
               unavailableAtCompletionIssued = true;
             if (saved.stage === stage && saved.id && !saved.unavailable) verificationCards.set(saved.id, undefined);
           }
@@ -1212,16 +1341,6 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         engine.sessionId = ctx.sessionManager.getSessionId();
         refreshSelectedPlan(ctx);
         refreshTestDiscovery(ctx);
-        const version = installedPiSitterVersion();
-        const verifierConfigured = protectedVerifierAvailable();
-        const text = `Pi Sitter ${version} · ${engine.mode} · ${testSetupSummary()} · Protected verification: ${verifierConfigured ? 'host configured' : 'unavailable'}`;
-        const signature = `${version}:${ctx.cwd}:${engine.mode}:${text}`;
-        if (!ctx.sessionManager.getBranch().some(entry => entry.type === 'custom' &&
-            entry.customType === STARTUP_TYPE && (entry.data as { signature?: string } | undefined)?.signature === signature))
-          try { pi.appendEntry(STARTUP_TYPE, { signature, text }); }
-          catch { /* Startup display cannot invalidate restored verification state. */ }
-        try { announceReadiness(ctx); }
-        catch { /* A display error cannot authorize verification. */ }
         lastStatus = lastWidget = '';
         render(ctx);
       } catch (error) {
@@ -1231,7 +1350,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         recoveryPlan = undefined;
         controllerConfigurationError = error instanceof Error ? error.message : 'Host setup could not be read';
         configurationError = controllerConfigurationError;
-        try { announceReadiness(ctx); } catch { /* Preserve failed-closed setup state. */ }
+        // Setup failures remain available through status and the final verification record.
       }
     });
 
@@ -1263,7 +1382,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           workerToolNames.length = 0;
           refreshCurrentContext(ctx);
           if (controllerContext) controllerConfigurationError = undefined;
-          announceReadiness(ctx);
+          refreshReadiness(ctx);
         }
         if (event.messageType === 'custom') workerState = 'Recovering';
       } catch (error) {
@@ -1273,7 +1392,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           lastCompletion = undefined;
           recoveryPlan = undefined;
           controllerConfigurationError = error instanceof Error ? error.message : 'Host controller could not be read';
-          try { announceReadiness(ctx); } catch { /* The Worker remains unverified. */ }
+          try { refreshReadiness(ctx); } catch { /* The Worker remains unverified. */ }
         }
       }
     });
@@ -1297,6 +1416,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           result: event.result, isError: event.isError, durationMs: event.durationMs };
         const classification = classifyObservation(observation);
         const trigger = engine.observe(observation);
+        lastObservedResultFingerprint = resultFingerprint(event.result);
         if (lastAdviceEpoch !== undefined && classification.kind === 'PROGRESS' &&
             event.toolName === lastAdviceTool && engine.progressVersion > lastAdviceEpoch) {
           workerRecoveries++;
@@ -1305,11 +1425,14 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           lastAdviceEpoch = undefined;
           lastAdviceTool = undefined;
           lastAdviceOperation = undefined;
+          lastAdviceInspectionReceipt = undefined;
           repeatedAfterAdvice = 0;
           view.finish('ready', 'Worker recovery observed: saved change');
           render(ctx);
         } else if (lastAdviceEpoch !== undefined && args?.signature === lastAdviceOperation &&
-            (classification.kind === 'NO_CHANGE' || classification.kind === 'ERROR')) {
+            (classification.kind === 'NO_CHANGE' || classification.kind === 'ERROR' ||
+              (classification.kind === 'INSPECTION' && lastAdviceInspectionReceipt !== undefined &&
+                resultFingerprint(event.result) === lastAdviceInspectionReceipt))) {
           repeatedAfterAdvice++;
           if (repeatedAfterAdvice === limits.maxRepeatedIneffectiveOps) {
             view.finish('error', 'Loop unresolved: Worker repeated the proven ineffective operation');
@@ -1361,12 +1484,22 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         const modelOutcome = diagnosed?.outcome;
         let outcome: InferenceOutcome = modelOutcome ?? { kind: 'failed', latencyMs: 0, reason: 'Inference budget exhausted' };
         let source: OutcomeEntry['source'] = 'model';
+        if (outcome.kind === 'ready' && outcome.diagnosis && (trigger.type === 'T4' || trigger.type === 'T5')) {
+          const weak = weakLoopAction(trigger, outcome.diagnosis, engine.recent, engine.task, lastDiagnostic);
+          if (weak) {
+            lastRejectedReason = weak;
+            outcome = { ...outcome, kind: 'failed', reason: weak,
+              rejectedResponses: [...(outcome.rejectedResponses ?? []), JSON.stringify(outcome.diagnosis).slice(0, 1000)] };
+          }
+        }
         if (outcome.kind !== 'ready' || modelAdvisories >= limits.maxValidAdvisories) {
           if (fallbackAdvisories < limits.maxFallbackAdvisories) {
             const fallback = fallbackFor(trigger);
             if (fallback) {
+              const fallbackReason = outcome.reason;
               outcome = { kind: 'ready', diagnosis: fallback, latencyMs: 0,
-                reason: modelOutcome?.reason ? `Fallback after ${modelOutcome.reason}` : 'Deterministic fallback selected' };
+                reason: fallbackReason ? `Fallback after ${fallbackReason}` : 'Deterministic fallback selected',
+                rejectedResponses: outcome.rejectedResponses };
               source = 'fallback';
               supervisorActivity = 'Deterministic fallback selected';
               view.finish('ready', `Fallback: ${fallback.issue} — ${fallback.next_action}`);
@@ -1409,11 +1542,17 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         else modelAdvisories++;
         lastAdviceEpoch = engine.progressVersion;
         lastAdviceTool = trigger.tool;
-        lastAdviceOperation = engine.recent.at(-1)?.operationKey;
+        const advisedOperation = triggerObservation(trigger, engine.recent);
+        lastAdviceOperation = advisedOperation ? advisedOperation.operationKey ??
+          operationSignature(advisedOperation.toolName, advisedOperation.args) : undefined;
+        lastAdviceInspectionReceipt = isInspectionLoop(trigger) ?
+          trigger.receiptFingerprint ?? lastObservedResultFingerprint : undefined;
         repeatedAfterAdvice = 0;
-        view.finish('delivered', `${diagnosis.issue} — ${diagnosis.next_action}`);
+        const content = buildWorkerDirective({ trigger, diagnosis, recent: engine.recent, task: engine.task,
+          stage: engine.stage, progressVersion: engine.progressVersion, diagnostic: lastDiagnostic,
+          source: source ?? 'model' });
+        view.finish('delivered', content.split('\n')[1] ?? diagnosis.next_action);
         supervisorActivity = source === 'fallback' ? 'Fallback delivered; Worker continuing' : 'Advisory delivered; Worker continuing';
-        const content = advisoryText(trigger, outcome);
         finishIntervention(interventionId, trigger, 'completed', outcome, source, true, content);
         try { recordOutcome(trigger, outcome, 'delivered', source, interventionId); render(ctx); } catch { /* Metadata is best effort. */ }
         awaitingContext.add(content);
@@ -1445,7 +1584,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           data: { stage: engine.stage, messageEntryId: event.messageEntryId, phase: 'stopped' } satisfies EmptyFinalEntry }] };
       }
       emptyFinalContinuationIssued = true;
-      const prompt = '[Pi Sitter completion follow-up — extension generated] Your previous turn stopped without a final report. Finish the original task’s required checks, including project tests when required. Report the exact commands and results, what you completed, and any remaining gaps. If a check cannot run, say why. Do not claim protected verification passed without trusted evidence.';
+      const prompt = '[Pi Sitter completion follow-up — extension generated] Your previous turn stopped without a final report. Finish the original task and provide a truthful completion report with what you completed and any remaining gaps. Do not claim tests passed without observed results.';
       return { entries: [...event.entries,
         { type: 'custom' as const, customType: EMPTY_FINAL_TYPE,
           data: { stage: engine.stage, messageEntryId: event.messageEntryId, phase: 'continuing' } satisfies EmptyFinalEntry },
@@ -1453,10 +1592,60 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         continue: true };
     });
 
+    pi.on('agent_before_settle', async (event, ctx) => {
+      if (event.outcome !== 'completed' || engine.mode === 'off' || !engine.stage ||
+          !dependencies.projectDiagnostic || protectedVerifierAvailable()) return;
+      const current = new AbortController();
+      projectDiagnosticController = current;
+      const sessionId = engine.sessionId;
+      const displayId = randomUUID();
+      pendingDiagnosticId = displayId;
+      pi.appendEntry(PROJECT_DIAGNOSTIC_PENDING_TYPE, { id: displayId, stage: engine.stage });
+      if (ctx.hasUI) {
+        ctx.ui.setWorkingMessage('Pi Sitter checking saved project…');
+        ctx.ui.setWorkingVisible(true);
+      }
+      let result: ProjectDiagnosticResult;
+      try {
+        result = boundedProjectDiagnostic(await dependencies.projectDiagnostic(engine.stage, ctx.cwd, current.signal));
+      } catch (error) {
+        result = { status: 'BLOCKED', passed: 0, failed: 0, total: 0,
+          reason: error instanceof Error ? error.message.slice(0, 800) : 'Host diagnostic failed' };
+      } finally {
+        if (projectDiagnosticController === current) projectDiagnosticController = undefined;
+      }
+      if (current.signal.aborted || engine.sessionId !== sessionId) {
+        diagnosticCards.set(displayId, 'interrupted');
+        if (pendingDiagnosticId === displayId) pendingDiagnosticId = undefined;
+        if (ctx.hasUI) ctx.ui.setWorkingMessage();
+        return;
+      }
+      lastDiagnostic = result.status === 'FAIL' ? { stage: engine.stage, failed: result.failed, total: result.total,
+        failures: result.failures ?? [], progressVersion: engine.progressVersion } : undefined;
+      let prompt: string | undefined;
+      if (result.status === 'FAIL' && !projectDiagnosticRetryIssued && !emptyFinalTerminalIssued && engine.mode === 'active') {
+        projectDiagnosticRetryIssued = true;
+        prompt = buildProjectDiagnosticPrompt(result, engine.task);
+      }
+      const card: ProjectDiagnosticCard = { stage: engine.stage, ...result,
+        progressVersion: engine.progressVersion, displayId, workerPrompt: prompt,
+        previousWorkerPrompt: prompt ? undefined : lastProjectDiagnosticPrompt };
+      diagnosticCards.set(displayId, card);
+      pendingDiagnosticId = undefined;
+      if (ctx.hasUI) ctx.ui.setWorkingMessage();
+      pi.appendEntry(PROJECT_DIAGNOSTIC_TYPE, card);
+      if (!prompt) return;
+      lastProjectDiagnosticPrompt = prompt;
+      return { entries: [...event.entries,
+        { type: 'custom' as const, customType: PROJECT_DIAGNOSTIC_RETRY_TYPE, data: { stage: engine.stage } },
+        { type: 'custom_message' as const, customType: PROJECT_DIAGNOSTIC_RETRY_TYPE, content: prompt, display: false }],
+        continue: true };
+    });
+
     pi.on('agent_before_settle', (event, ctx) => {
       if (event.outcome !== 'completed' || engine.mode === 'off' || !engine.stage || unavailableAtCompletionIssued) return;
       refreshTestDiscovery(ctx);
-      if (protectedVerifierAvailable()) return;
+      if (protectedVerifierAvailable() || dependencies.projectDiagnostic) return;
       unavailableAtCompletionIssued = true;
       showUnavailableVerification(unavailableAtCompletionReason());
     });
@@ -1614,6 +1803,10 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     });
 
     pi.on('agent_settled', (_event, ctx) => {
+      if (pendingDiagnosticId) {
+        diagnosticCards.set(pendingDiagnosticId, 'interrupted');
+        pendingDiagnosticId = undefined;
+      }
       if (pendingVerificationId) {
         verificationCards.set(pendingVerificationId, 'interrupted');
         pendingVerificationId = undefined;
@@ -1631,6 +1824,7 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         controller?.abort(new Error('Pi Sitter session ended'));
         verificationController?.abort(new Error('Pi Sitter session ended'));
         analysisController?.abort(new Error('Pi Sitter session ended'));
+        projectDiagnosticController?.abort(new Error('Pi Sitter session ended'));
         stopUI();
         pending = undefined;
         if (ctx.hasUI) {
@@ -1651,6 +1845,8 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         lastCompletion = undefined;
         verificationCards.clear();
         pendingVerificationId = undefined;
+        diagnosticCards.clear();
+        pendingDiagnosticId = undefined;
         recoveryCards.clear();
         recoveryPlan = undefined;
         recoveryAttempts = 0;
@@ -1663,6 +1859,8 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
         lastAdviceEpoch = undefined;
         lastAdviceTool = undefined;
         lastAdviceOperation = undefined;
+        lastAdviceInspectionReceipt = undefined;
+        lastObservedResultFingerprint = undefined;
         repeatedAfterAdvice = 0;
         lastRejectedReason = '';
         awaitingContext.clear();
@@ -1672,8 +1870,8 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
     });
 
     pi.registerCommand('sitter', {
-      description: 'Pi Sitter: setup, use, status, gates, report, recover, verify, off, shadow, on',
-      getArgumentCompletions: prefix => ['setup', 'use', 'status', 'gates', 'report', 'recover', 'verify', 'off', 'shadow', 'on']
+      description: 'Pi Sitter: use, status, gates, report, recover, verify, off, shadow, on',
+      getArgumentCompletions: prefix => ['use', 'status', 'gates', 'report', 'recover', 'verify', 'off', 'shadow', 'on']
         .filter(value => value.startsWith(prefix)).map(value => ({ value, label: value })),
       handler: async (args, ctx) => {
         try {
@@ -1681,15 +1879,6 @@ export function createPiSitter(dependencies: PiSitterDependencies = {}): (pi: Ex
           const command = words[0]?.toLowerCase() ?? '';
           if (['status', 'gates', 'report', 'recover', 'verify'].includes(command)) refreshCurrentContext(ctx);
           if (!command) view.toggle();
-          else if (command === 'setup') {
-            refreshCurrentContext(ctx);
-            const state = refreshReadiness(ctx);
-            const script = state.candidate.kind === 'candidate' && state.candidate.script ?
-              `\npackage.json test script: ${JSON.stringify(state.candidate.script)}` : '';
-            ctx.ui.notify(`${state.status}: ${state.summary}${script}\n${state.missing.length ?
-              `Missing: ${state.missing.join(', ')}. ` : ''}A protected suite and controller must be configured by the host outside Worker write access.`,
-              state.status === 'READY' ? 'info' : 'warning');
-          }
           else if (command === 'use') {
             if (words.length !== 2) throw new Error('Use /sitter use <approved-plan-id>');
             const id = approvedPlanId(words[1]);

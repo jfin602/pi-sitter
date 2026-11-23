@@ -25,7 +25,8 @@ function passingReport() {
     gates: [{ id: 'G1', tests: [{ id: 'T1', result: 'PASS', evidence: 'Trusted fixture assertion passed' }] }] };
 }
 
-async function nativeSession({ responses, projectTest = false, configured = false, verifiedReview = false, mode = 'active' }) {
+async function nativeSession({ responses, projectTest = false, configured = false, verifiedReview = false,
+  diagnostics, mode = 'active' }) {
   const root = await mkdtemp(join(tmpdir(), 'pi-sitter-empty-final-'));
   const agentDir = join(root, 'agent');
   if (projectTest) await writeFile(join(root, 'package.json'), JSON.stringify({ scripts: { test: 'node --test' } }));
@@ -35,7 +36,7 @@ async function nativeSession({ responses, projectTest = false, configured = fals
   process.env.PI_SITTER_STAGE = 'final';
   const faux = createFauxCore({ provider: 'empty-final-fixture' });
   faux.setResponses(responses);
-  const seen = { turns: [], settles: 0, requests: [], verifies: 0 };
+  const seen = { turns: [], settles: 0, requests: [], verifies: 0, diagnostics: 0 };
   const observer = pi => {
     pi.on('agent_before_settle', () => { seen.settles++; });
   };
@@ -59,6 +60,10 @@ async function nativeSession({ responses, projectTest = false, configured = fals
           limitations: [] }] };
     },
   } : {}) } : {};
+  if (diagnostics) deps.projectDiagnostic = async (...args) => {
+    seen.diagnostics++;
+    return typeof diagnostics === 'function' ? diagnostics(...args) : diagnostics.shift();
+  };
   let session;
   try {
     const loader = new DefaultResourceLoader({ cwd: root, agentDir, noExtensions: true, noSkills: true,
@@ -94,18 +99,16 @@ function entries(session, type) {
   return session.sessionManager.getBranch().filter(entry => entry.type === 'custom' && entry.customType === type);
 }
 
-test('native Pi records an actionable unavailable warning before the first Worker turn', async () => {
+test('native Pi discovers the project test command without a startup notification', async () => {
   const h = await nativeSession({ projectTest: true, responses: [fauxAssistantMessage('Ready for host verification.')] });
   try {
     assert.equal(h.seen.turns.length, 0);
     const before = entries(h.session, 'pi-sitter-readiness');
-    assert.equal(before.length, 1);
-    assert.equal(before[0].data.status, 'UNAVAILABLE');
-    assert.match(before[0].data.summary, /Discovered npm test/);
-    assert.match(before[0].data.summary, /Run \/sitter setup/);
+    assert.equal(before.length, 0);
+    assert.equal(entries(h.session, 'pi-sitter-startup').length, 0);
     await h.session._startRun({ messageType: 'user', prompt: 'Finish the task' });
     assert.equal(h.seen.turns.length, 1);
-    assert.equal(entries(h.session, 'pi-sitter-readiness').length, 1);
+    assert.equal(entries(h.session, 'pi-sitter-readiness').length, 0);
   } finally { await h.close(); }
 });
 
@@ -121,7 +124,7 @@ test('native Pi turn_end continues an empty stop once, then agent_before_settle 
     assert.equal(entries(h.session, 'pi-sitter-empty-final').filter(e => e.data.phase === 'continuing').length, 1);
     const unavailable = entries(h.session, 'pi-sitter-verification-pending').filter(e => e.data.unavailable);
     assert.equal(unavailable.length, 1);
-    assert.match(unavailable[0].data.unavailable, /Discovered npm test is informational and was not run or approved/);
+    assert.match(unavailable[0].data.unavailable, /Found npm test, but Pi Sitter did not run it as final validation/);
     assert.equal(entries(h.session, 'pi-sitter-verification-attempt').length, 0);
   } finally { await h.close(); }
 });
@@ -193,6 +196,124 @@ test('native Pi no-tests completion remains unavailable without a verification a
     assert.equal(unavailable.length, 1);
     assert.doesNotMatch(unavailable[0].data.unavailable, /Discovered npm test/);
   } finally { await h.close(); }
+});
+
+test('native Pi uses host diagnostic failure for one repair continuation and reruns it after repair', async () => {
+  const h = await nativeSession({ responses: [fauxAssistantMessage('Implementation complete.'),
+    fauxAssistantMessage('Repaired implementation; final report.')], diagnostics: [
+    { status: 'FAIL', suite: 'fixture', passed: 0, failed: 1, total: 1,
+      failures: [{ id: 'stage-one', detail: 'Expected a main scene' }] },
+    { status: 'PASS', suite: 'fixture', passed: 1, failed: 0, total: 1 }] });
+  try {
+    await h.session._startRun({ messageType: 'user', prompt: 'Finish the task' });
+    assert.equal(h.seen.turns.length, 2);
+    assert.equal(h.seen.settles, 2);
+    assert.equal(h.seen.diagnostics, 2);
+    assert.match(JSON.stringify(h.seen.requests[1]), /Expected a main scene/);
+    assert.match(JSON.stringify(h.seen.requests[1]), /You must carry out the original task's requested source repair now/);
+    assert.match(JSON.stringify(h.seen.requests[1]), /Do not end with only a diagnosis, a plan, or a promise to inspect later/);
+    assert.deepEqual(entries(h.session, 'pi-sitter-project-diagnostic').map(row => row.data.status), ['FAIL', 'PASS']);
+    assert.equal(entries(h.session, 'pi-sitter-project-diagnostic-retry').length, 1);
+    assert.equal(entries(h.session, 'pi-sitter-verification-attempt').length, 0);
+    assert.equal(entries(h.session, 'pi-sitter-verification-pending').filter(row => row.data.unavailable).length, 0);
+  } finally { await h.close(); }
+});
+
+test('native Pi repeated host diagnostic failure stops after one repair continuation', async () => {
+  const failure = { status: 'FAIL', passed: 0, failed: 2, total: 2,
+    failures: [{ id: 'downstream', detail: 'AssertionError: behavior unavailable\n    at /host/protected.test.js:8:1' },
+      { id: 'saved-state', detail: 'AssertionError: Main script=missing: expected FAIL to be PASS\n    at /host/protected.test.js:9:1' }] };
+  const h = await nativeSession({ responses: [fauxAssistantMessage('Done.'), fauxAssistantMessage('Done again.')],
+    diagnostics: [failure, failure] });
+  try {
+    await h.session._startRun({ messageType: 'user', prompt: 'Finish the task' });
+    assert.equal(h.seen.turns.length, 2);
+    assert.equal(h.seen.diagnostics, 2);
+    assert.equal(entries(h.session, 'pi-sitter-project-diagnostic-retry').length, 1);
+    assert.equal(entries(h.session, 'pi-sitter-project-diagnostic').at(-1).data.status, 'FAIL');
+    const retry = JSON.stringify(h.seen.requests[1]);
+    assert.ok(retry.indexOf('saved-state: \\"Main script=missing') < retry.indexOf('downstream: \\"behavior unavailable'));
+    assert.doesNotMatch(retry, /protected\.test\.js|at \/host/);
+    assert.match(retry, /Do not repeat an unchanged inspection/);
+    assert.match(retry, /repair that artifact in place, save it, and read it back/);
+  } finally { await h.close(); }
+});
+
+test('host diagnostic shows pending immediately and discloses the exact repair prompt on both result cards', async () => {
+  const gates = [];
+  const deferred = () => new Promise(resolve => { gates.push(resolve); });
+  const failure = { status: 'FAIL', suite: 'fixture', passed: 0, failed: 1, total: 1,
+    failures: [{ id: 'spawn-interval', detail: 'Spawn interval unavailable' }] };
+  const h = await nativeSession({ responses: [fauxAssistantMessage('First report.'), fauxAssistantMessage('Repair report.')],
+    diagnostics: deferred });
+  let run;
+  try {
+    run = h.session._startRun({ messageType: 'user', prompt: 'Finish the task' });
+    for (let i = 0; i < 100 && h.seen.diagnostics < 1; i++) await new Promise(setImmediate);
+    assert.equal(h.seen.diagnostics, 1);
+    const pending = entries(h.session, 'pi-sitter-project-diagnostic-pending');
+    assert.equal(pending.length, 1);
+    assert.equal(entries(h.session, 'pi-sitter-project-diagnostic').length, 0);
+    const renderer = h.session.extensionRunner.getEntryRenderer('pi-sitter-project-diagnostic-pending');
+    const styles = [];
+    const theme = { appearance: 'dark', style(text, options) { styles.push(options); return text; } };
+    const first = renderer(pending[0], { expanded: false }, theme);
+    assert.match(first.render(100).join('\n'), /DIAGNOSTIC RUNNING/);
+    assert.ok(styles.every(style => style.bg.r === 55 && style.bg.g === 55 && style.bg.b === 55));
+    gates[0](failure);
+    for (let i = 0; i < 100 && h.seen.diagnostics < 2; i++) await new Promise(setImmediate);
+    assert.equal(h.seen.diagnostics, 2);
+    const firstResult = entries(h.session, 'pi-sitter-project-diagnostic')[0].data;
+    const sent = h.session.sessionManager.getBranch().find(entry => entry.type === 'custom_message' &&
+      entry.customType === 'pi-sitter-project-diagnostic-retry').content;
+    assert.equal(firstResult.workerPrompt, sent);
+    assert.ok(JSON.stringify(h.seen.requests[1]).includes(JSON.stringify(sent).slice(1, -1)));
+    assert.match(sent.split('\n')[0], /1\/1 checks failed/);
+    assert.match(sent.split('\n')[1], /Start with reported observation.*save it, and read it back/);
+    assert.match(first.render(100).join('\n'), /Click to show more/);
+    assert.deepEqual(first.handleMouse({ type: 'click', button: 'left' }), { handled: true });
+    assert.match(first.render(100).join('\n'), /Full prompt supplied to Worker after this diagnostic/);
+    assert.match(first.render(100).join('\n'), /You must carry out the original task's requested source repair now/);
+    const secondPending = entries(h.session, 'pi-sitter-project-diagnostic-pending')[1];
+    assert.match(renderer(secondPending, { expanded: false }, theme).render(100).join('\n'), /DIAGNOSTIC RUNNING/);
+    gates[1](failure);
+    await run;
+    const secondResult = entries(h.session, 'pi-sitter-project-diagnostic')[1].data;
+    assert.equal(secondResult.workerPrompt, undefined);
+    assert.equal(secondResult.previousWorkerPrompt, sent);
+    const finalCard = renderer(secondPending, { expanded: false }, theme);
+    assert.match(finalCard.render(100).join('\n'), /Click to show more/);
+    finalCard.handleMouse({ type: 'click', button: 'left' });
+    assert.match(finalCard.render(100).join('\n'), /previous diagnostic \(none sent after this result\)/);
+    assert.match(finalCard.render(100).join('\n'), /You must carry out the original task's requested source repair now/);
+    await h.session.extensionRunner.emit({ type: 'session_start', reason: 'resume' });
+    const replayed = renderer(secondPending, { expanded: true }, theme).render(100).join('\n');
+    assert.match(replayed, /previous diagnostic \(none sent after this result\)/);
+    assert.match(replayed, /You must carry out the original task's requested source repair now/);
+  } finally {
+    for (const resolve of gates) resolve(failure);
+    if (run) await run;
+    await h.close();
+  }
+});
+
+test('native Pi skips host diagnostic on abort or provider error and when protected verification is configured', async () => {
+  for (const response of [fauxAssistantMessage([], { stopReason: 'aborted' }),
+    fauxAssistantMessage([], { stopReason: 'error', errorMessage: 'Provider failed' })]) {
+    const h = await nativeSession({ responses: [response], diagnostics: [{ status: 'PASS', passed: 1, failed: 0, total: 1 }] });
+    try {
+      await h.session._startRun({ messageType: 'user', prompt: 'Finish the task' });
+      assert.equal(h.seen.diagnostics, 0);
+    } finally { await h.close(); }
+  }
+  const configured = await nativeSession({ configured: true, verifiedReview: true,
+    responses: [fauxAssistantMessage('Done.')], diagnostics: [{ status: 'PASS', passed: 1, failed: 0, total: 1 }] });
+  try {
+    await configured.session._startRun({ messageType: 'user', prompt: 'Finish the task' });
+    assert.equal(configured.seen.diagnostics, 0);
+    assert.equal(configured.seen.verifies, 1);
+    assert.equal(entries(configured.session, 'pi-sitter-completion').at(-1).data.decision, 'VERIFIED');
+  } finally { await configured.close(); }
 });
 
 test('native Pi configured verifier runs once after the empty-stop continuation', async () => {

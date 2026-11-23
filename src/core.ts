@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 export type PiSitterMode = 'off' | 'shadow' | 'active';
-export type TriggerType = 'T1' | 'T2' | 'T3' | 'T4';
+export type TriggerType = 'T1' | 'T2' | 'T3' | 'T4' | 'T5';
 export type ObservationClass = 'PROGRESS' | 'NO_CHANGE' | 'ERROR' | 'INSPECTION' | 'UNKNOWN';
 
 export interface ToolObservation {
@@ -20,6 +20,7 @@ export interface Trigger {
   evidence: string;
   key: string;
   stage?: string;
+  receiptFingerprint?: string;
 }
 
 export interface MilestoneEvidence {
@@ -36,6 +37,7 @@ const MAX_MILESTONES = 16;
 const MAX_SIGNATURES = 16;
 const MAX_STAGNANT = 12;
 const MAX_TEXT = 200;
+const IDLE_INSPECTION_THRESHOLD = 5;
 
 function bounded<T>(array: T[], value: T, limit: number): void {
   array.push(value);
@@ -58,6 +60,11 @@ function compact(value: unknown): string {
     }
   }
   return '';
+}
+
+export function resultFingerprint(value: unknown): string {
+  try { return createHash('sha256').update(JSON.stringify(value) ?? '').digest('hex'); }
+  catch { return ''; }
 }
 
 function resultBody(value: unknown): Record<string, unknown> | undefined {
@@ -95,22 +102,32 @@ function noChange(event: ToolObservation): string | undefined {
   const receipt = body.receipt as { status?: string; changes?: unknown } | undefined;
   const status = receipt?.status?.toLowerCase();
   const empty = Array.isArray(receipt?.changes) && receipt.changes.length === 0;
+  // Some providers report a preview as "created" or "updated". The explicit
+  // persistence fields are more decisive than those optimistic receipt labels.
+  if (isMutation(event.toolName) && body.dry_run === true) return 'dry_run:true; no saved change';
+  if (isMutation(event.toolName) && body.saved === false) return 'saved:false; no saved change';
   const unchanged = Array.isArray(receipt?.changes) && receipt.changes.length > 0 && receipt.changes.every(change => {
     if (!change || typeof change !== 'object') return false;
     const record = change as Record<string, unknown>;
     return /^(?:set|write|update|replace)$/.test(String(record.op ?? '')) &&
       'before' in record && 'after' in record && stable(record.before) === stable(record.after);
   });
+  const opaqueNullPlaceholders = Array.isArray(receipt?.changes) && receipt.changes.length > 0 &&
+    receipt.changes.every(change => !!change && typeof change === 'object' &&
+      (change as Record<string, unknown>).before === null && (change as Record<string, unknown>).after === null);
   if ((status === 'no-op' || status === 'noop' || status === 'unchanged' || status === 'existed') &&
       (!Array.isArray(receipt?.changes) || empty)) {
     return `receipt status ${status}; ${empty ? 'changes []' : 'no recorded modification'}`;
   }
   if (isMutation(event.toolName) && empty && status) return `receipt status ${status}; changes []`;
-  if (isMutation(event.toolName) && unchanged) return 'receipt changes have identical before and after values';
+  // A scene-save provider can use null for both opaque snapshots while also
+  // asserting a real saved update. Those placeholders cannot prove equality.
+  if (isMutation(event.toolName) && unchanged && !(opaqueNullPlaceholders && event.toolName.endsWith('save_scene') &&
+      body.saved === true && body.dry_run === false && status === 'updated'))
+    return 'receipt changes have identical before and after values';
   if (isMutation(event.toolName) && (body.changed === false || body.no_op === true || empty)) return 'successful call recorded no change';
   if (isMutation(event.toolName) && body.set === false) return 'setter reported set=false';
   if (isMutation(event.toolName) && body.created === false) return 'creator reported created=false';
-  if (isMutation(event.toolName) && body.dry_run === true) return 'dry_run=true; no saved change';
 }
 
 export function failed(event: ToolObservation): boolean {
@@ -193,6 +210,7 @@ export class PiSitterEngine {
   private failureEpoch = 0;
   private setupHistory: string[] = [];
   private stagnantHistory: { operation: string; receipt: string; epoch: number; kind: 'no-change' | 'inspection' }[] = [];
+  private idleInspection?: { operation: string; receipt: string; count: number; epoch: number };
   private recovery = false;
   private duplicateKeys = new Set<string>();
   private readonly maxTriggers: number;
@@ -222,6 +240,7 @@ export class PiSitterEngine {
     this.failureEpoch = 0;
     this.setupHistory.length = 0;
     this.stagnantHistory.length = 0;
+    this.idleInspection = undefined;
     this.recovery = false;
     this.duplicateKeys.clear();
   }
@@ -237,6 +256,7 @@ export class PiSitterEngine {
       this.setupHistory.length = 0;
       this.failureSignatures.length = 0;
       this.stagnantHistory.length = 0;
+      this.idleInspection = undefined;
     }
   }
 
@@ -254,6 +274,14 @@ export class PiSitterEngine {
       const classification = classifyObservation(event);
       const error = classification.kind === 'ERROR';
       const argsKey = event.operationKey ?? operationSignature(event.toolName, event.args);
+      const inspectionReceipt = classification.kind === 'INSPECTION' && isInspection(event.toolName) &&
+        !isSetup(event.toolName) && !this.recovery && compact(event.result) ? resultFingerprint(event.result) : '';
+      if (inspectionReceipt) {
+        const previous = this.idleInspection;
+        this.idleInspection = previous?.operation === argsKey && previous.receipt === inspectionReceipt &&
+          previous.epoch === this.progressEpoch ? { ...previous, count: Math.min(previous.count + 1, IDLE_INSPECTION_THRESHOLD + 1) } :
+          { operation: argsKey, receipt: inspectionReceipt, count: 1, epoch: this.progressEpoch };
+      } else this.idleInspection = undefined;
       const argsPreview = (typeof event.args === 'string' ? event.args : JSON.stringify(event.args ?? {})).slice(0, 256);
       bounded(this.recent, { ...event, args: argsPreview, isError: error, result: compact(event.result).slice(0, 400) }, MAX_TOOLS);
       if (classification.kind === 'PROGRESS') {
@@ -273,6 +301,12 @@ export class PiSitterEngine {
         this.failureSignatures.length = 0;
         this.recovery = false;
         this.stagnantHistory.length = 0;
+      }
+      if (this.idleInspection?.count === IDLE_INSPECTION_THRESHOLD) {
+        const receiptFingerprint = inspectionReceipt;
+        return this.emit({ type: 'T5', tool: event.toolName,
+          evidence: `${IDLE_INSPECTION_THRESHOLD} identical inspections of unchanged state without progress`,
+          receiptFingerprint, key: `T5:${argsKey}:${receiptFingerprint}:${this.progressEpoch}` });
       }
       if (error) {
         this.recovery = true;
@@ -299,6 +333,7 @@ export class PiSitterEngine {
         const count = this.stagnantHistory.filter(item => item.operation === argsKey && item.receipt === receipt && item.epoch === this.progressEpoch && item.kind === 'inspection').length;
         if (count >= 3) return this.emit({ type: 'T4', tool: event.toolName,
           evidence: `${count} identical inspections of unchanged state during recovery`,
+          receiptFingerprint: resultFingerprint(event.result),
           key: `T4:${argsKey}:${receipt}:${this.progressEpoch}` });
       }
       if (isSetup(event.toolName)) {

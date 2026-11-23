@@ -94,6 +94,7 @@ export interface RecoveryPlan {
 export interface RecoveryDiagnosis {
   trigger: 'failed_gate';
   status: 'SUPPORTED' | 'UNVERIFIED';
+  taskId?: string;
   task: string;
   milestone: string;
   suite?: { id: string; version: string; digest: string };
@@ -113,8 +114,16 @@ export interface RecoveryDiagnosis {
   escalation?: 'protected_suite_owner';
 }
 
+function firstRecoveryAction(d: RecoveryDiagnosis): string {
+  if (d.status === 'SUPPORTED' && d.actions.length)
+    return `Do now: ${d.actions[0]} Repair the existing source in place, save it, and read back the changed artifact before reporting completion.`;
+  return 'Do now: inspect one existing task-related saved source artifact relevant to the failed assertion with an approved read operation. If no artifact or safe repair is supported, report the missing evidence and exact blocker; do not guess a cause.';
+}
+
 function renderRecovery(d: RecoveryDiagnosis, regressions: string[]): string {
-  const lines = [`Pi Sitter Recovery — Stage ${d.milestone}`, `Continue the current Worker task: ${d.task.slice(0, 300)}`,
+  const lines = [`Pi Sitter protected gate recovery — ${d.failedGateIds.length} failed gate${d.failedGateIds.length === 1 ? '' : 's'}; the original task remains unfinished.`,
+    firstRecoveryAction(d),
+    `Task: ${d.taskId ?? 'unavailable'}; stage: ${d.milestone}; original request: ${d.task.slice(0, 300)}`,
     `Saved snapshot: ${d.source}`, `Failed gate IDs: ${d.failedGateIds.join(', ')}`,
     ...(regressions.length ? [`Regressed gate IDs: ${regressions.join(', ')}`] : []),
     `Suite: ${d.suite ? `${d.suite.id}@${d.suite.version} (${d.suite.digest})` : 'legacy, unverified'}; run: ${d.run ?? 'unavailable'}`,
@@ -125,11 +134,11 @@ function renderRecovery(d: RecoveryDiagnosis, regressions: string[]): string {
   if (d.evidenceRefs.length) lines.push('Causal evidence:', ...d.evidenceRefs.map(ref => `- ${ref.ref}: ${ref.quote}${ref.path ? ` (${ref.path}${ref.line ? `:${ref.line}` : ''})` : ''}`));
   if (d.affected.length) lines.push('Affected source:', ...d.affected.map(row => `- ${row.path}${row.function ? ` — ${row.function}` : ''}`));
   if (d.actions.length) lines.push('Ordered Worker repairs:', ...d.actions.map((action, index) => `${index + 1}. ${action}`));
-  else lines.push('Next safe inspection: inspect the failed assertion and its named source location through the approved read-only broker; report the blocker if no causal location is available.');
+  else lines.push('Next safe inspection: use one approved read of a task-related saved source artifact; report the exact blocker if no causal location is available.');
   lines.push(`Approved verification rerun: request post_repair for gates ${d.verification.gateIds.join(', ')} (tests ${d.verification.testIds.join(', ') || 'unavailable'}) through the trusted runner after a saved source change.`);
   if (d.escalation) lines.push('Suspected protected-suite defect: escalate to the authorized test owner; do not edit the protected suite.');
   if (d.gaps.length) lines.push(`Unresolved gaps: ${d.gaps.join('; ')}`);
-  lines.push('Preserve all functionality whose gates passed, including earlier stages. Do not rewrite unrelated files or replace working controllers. Save changes and reverify the failed gates and integration behavior before reporting completion.');
+  lines.push('Preserve all functionality whose gates passed, including earlier stages. Do not rewrite unrelated files or replace working controllers. The trusted runner controls protected gate results and reruns; do not select a test command or edit the protected suite. Report saved changes, read-back checks, and remaining failures accurately.');
   return lines.join('\n');
 }
 
@@ -206,7 +215,8 @@ export function createRecoveryPlan(report: GateReport, task: string): RecoveryPl
     [{ gateId: gate.id, failure: gate.evidence || gate.explanation }]);
   const failedTestIds = report.schemaVersion === 2 ? failed.flatMap(gate =>
     (gate as TrustedGateReport['gates'][number]).tests.filter(test => test.result === 'FAIL').map(test => test.id)) : [];
-  const diagnosis: RecoveryDiagnosis = { trigger: 'failed_gate', status: 'UNVERIFIED', task, milestone: report.stage,
+  const diagnosis: RecoveryDiagnosis = { trigger: 'failed_gate', status: 'UNVERIFIED', task,
+    taskId: report.schemaVersion === 2 ? report.taskId : undefined, milestone: report.stage,
     suite: report.schemaVersion === 2 ? report.suite : undefined, source: report.snapshotIdentity,
     run: report.schemaVersion === 2 ? report.runId : undefined, failedGateIds, failedTestIds, observed,
     evidenceRefs: [], uncertainty: 'The failed assertion establishes the symptom, not its root cause.',
@@ -236,9 +246,6 @@ export function applyRecoveryAnalysis(plan: RecoveryPlan, report: GateReport, an
 
 /** A same-snapshot Worker turn has not completed the repair already requested. */
 export function noProgressRecoveryPrompt(plan: RecoveryPlan): string {
-  const [heading, ...details] = plan.text.split('\n');
-  const next = plan.diagnosis.status === 'SUPPORTED' ?
-    'Perform the concrete edit listed below with an approved Worker tool, save it, and verify the resulting behavior before finishing.' :
-    'The cause remains UNVERIFIED. Perform only the bounded safe inspection below; report the exact blocker instead of guessing a repair.';
-  return `${heading}\nThe previous repair turn ended without a saved project change. The same snapshot and failed gates remain. ${next}\n${details.join('\n')}`;
+  const [heading, , ...details] = plan.text.split('\n');
+  return `${heading}\nNo saved source change was observed. The snapshot ${plan.snapshotIdentity} and failed gates ${plan.failedGateIds.join(', ')} are unchanged. ${firstRecoveryAction(plan.diagnosis)}\n${details.join('\n')}`;
 }

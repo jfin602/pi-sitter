@@ -10,6 +10,7 @@ export interface InterventionEvent {
   issue?: string;
   evidence?: string;
   nextAction?: string;
+  confidence?: number;
   reason?: string;
   source?: 'model' | 'fallback';
   delivered?: boolean;

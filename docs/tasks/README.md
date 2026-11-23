@@ -1,5 +1,6 @@
 # Pi Sitter Task Index
 
+- [Post-validation repair prompts](post-validation-repair-prompts/README.md): proposed direct Worker wording for host diagnostic and protected-gate recovery; planning only.
 - [Verification readiness before Worker execution](verification-readiness/README.md): early warning and host-only plan selection implemented; protected benchmark preflight and controller integration pending.
 - [P1 — Test-directed supervision for 1.0](p1/README.md): **PLANNED ONLY**. No P1 implementation prompts authored/executed or evidence qualified.
 - [P1 qualification ledger](p1/qualification/README.md): placeholder matrix for source-bound results.

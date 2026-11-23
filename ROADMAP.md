@@ -2,6 +2,8 @@
 
 **State:** Architecture decisions **APPROVED**; implementation and independent qualification **NOT COMPLETE**. [Owner worksheet](https://github.com/jfin602/pi-sitter/issues/1) and [applied-doc review](https://github.com/jfin602/pi-sitter/issues/2) control design.
 
+**2026-11-23 owner milestone:** A live Stage 04 benchmark host diagnostic reached 51/51 after one repair continuation. The owner authorized a `0.2.0` package checkpoint and Git push for this milestone. Protected acceptance, independent requirement review, P10 closeout, and `1.0.0` qualification remain open. Historical `0.1.x` prompt checkpoints below describe the earlier P1 runner stack.
+
 **2026-11-21 checkpoint:** P1–P8 are runner committed. P9's two-project packed-install and deterministic headless qualification is recorded in the [P9 ledger](docs/tasks/p1/qualification/p9-headless.md) on a dirty `0.1.9` tree awaiting its runner commit. Reporter/model responses in those fixtures are simulated. P10 remains exclusively manual and browser gated; no native Pi/MCP or owner release signoff is inferred.
 
 | Phase | Deliverable | Gate and evidence |

@@ -228,8 +228,8 @@ test('unchanged saved snapshot gets one focused retry of the same repair attempt
   const retryRecord = retry.entries.find(e => e.customType === 'pi-sitter-recovery').data;
   assert.equal(retryRecord.attempt, 1);
   assert.equal(retryRecord.retry, 1);
-  assert.match(retry.entries.find(e => e.type === 'custom_message').content, /previous repair turn ended without a saved project change/);
-  assert.match(retry.entries.find(e => e.type === 'custom_message').content, /cause remains UNVERIFIED/);
+  assert.match(retry.entries.find(e => e.type === 'custom_message').content, /No saved source change was observed/);
+  assert.match(retry.entries.find(e => e.type === 'custom_message').content, /Do now: inspect one existing task-related saved source artifact/);
   await h.workerFinish();
   const second = await h.settle();
   assert.equal(second.entries.find(e => e.customType === 'pi-sitter-recovery').data.attempt, 2);

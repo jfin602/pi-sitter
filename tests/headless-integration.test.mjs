@@ -198,9 +198,10 @@ test('unsupported sandbox plan is rejected before execution', () => {
 test('npm tarball installs and Pi loads src/index.ts from two unrelated projects', async t => {
   const root = await mkdtemp(join(tmpdir(), 'pi-sitter-pack-'));
   try {
+    const expectedVersion = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')).version;
     const packed = await run('npm', ['pack', '--silent', '--pack-destination', root], { cwd: packageRoot });
     const tarball = join(root, packed.stdout.trim().split('\n').at(-1));
-    assert.match(tarball, /pi-sitter-0\.1\.[0-9]+\.tgz$/);
+    assert.equal(tarball, join(root, `pi-sitter-${expectedVersion}.tgz`));
     for (const name of ['ts', 'python']) await t.test(name, async () => {
       const project = join(root, `${name}-consumer`);
       const agentDir = join(project, '.agent');
@@ -211,6 +212,7 @@ test('npm tarball installs and Pi loads src/index.ts from two unrelated projects
         '@earendil-works/pi-coding-agent@1.5.2', 'typebox@1.4.7', tarball], { cwd: project, timeout: 120_000 });
       const installed = join(project, 'node_modules/pi-sitter');
       const manifest = JSON.parse(await readFile(join(installed, 'package.json'), 'utf8'));
+      assert.equal(manifest.version, expectedVersion);
       assert.deepEqual(manifest.pi.extensions, ['./src/index.ts']);
       assert.equal(manifest.exports['.'], './src/index.ts');
       assert.match(await readFile(join(installed, 'src/index.ts'), 'utf8'), /createPiSitter/);

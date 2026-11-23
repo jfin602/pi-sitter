@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { runInspectionAnalysis } from '../src/analysis.ts';
-import { applyRecoveryAnalysis, createRecoveryPlan } from '../src/completion.ts';
+import { applyRecoveryAnalysis, createRecoveryPlan, noProgressRecoveryPrompt } from '../src/completion.ts';
 
 const source = 'a'.repeat(64);
 const suite = { id: 'suite-cart', version: 'v2', digest: 'b'.repeat(64) };
@@ -53,6 +53,26 @@ test('two-file repair cites failed assertion and current inspections with ordere
   assert.match(plan.text, /src\/cart.ts:42/);
   assert.ok(plan.text.indexOf('1. Call applyDiscount') < plan.text.indexOf('2. Check applyDiscount'));
   assert.match(plan.text, /run-12/);
+  assert.match(plan.text.split('\n')[1], /^Do now: Call applyDiscount.*save it, and read back/);
+  assert.match(plan.text, /Task: task-cart; stage: checkout/);
+  assert.match(plan.text, /Suite: suite-cart@v2/);
+  assert.match(plan.text, /TOTAL\/discount-total at src\/cart\.ts:42: cart total expected 90, got 100/);
+  const retry = noProgressRecoveryPrompt(plan);
+  assert.match(retry.split('\n')[1], /^No saved source change was observed.*Do now: Call applyDiscount/);
+  assert.match(retry, new RegExp(source));
+  assert.match(retry, /run-12/);
+});
+
+test('unverified recovery leads with one bounded inspection and keeps failed assertion provenance', () => {
+  const plan = createRecoveryPlan(report, 'Fix discounted cart total');
+  assert.match(plan.text.split('\n')[1], /Do now: inspect one existing task-related saved source artifact/);
+  assert.doesNotMatch(plan.text.split('\n')[1], /computeTotal|src\/cart\.ts|expected 90/);
+  assert.match(plan.text, /TOTAL\/discount-total at src\/cart\.ts:42/);
+  assert.match(plan.text, /Suite: suite-cart@v2/);
+  assert.match(plan.text, /run-12/);
+  const retry = noProgressRecoveryPrompt(plan);
+  assert.match(retry.split('\n')[1], /No saved source change was observed.*Do now: inspect one existing/);
+  assert.doesNotMatch(retry, /npm test|vitest /i);
 });
 
 test('passing gate quote, stale inspection receipt, and unrelated error cannot support a root cause', async () => {

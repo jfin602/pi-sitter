@@ -2,6 +2,8 @@
 
 **Status:** Development-only exact Dope runner port from `jfin602/vault` (which records byte identity to `jfin602/dope` on 2026-11-21). This is NOT the Pi Sitter runtime verifier, not Vitest gate authority and not a reason to mark 1.0 qualified.
 
+**2026-11-23 owner milestone:** The owner authorized a `0.2.0` package checkpoint and direct Git commit/push after a live Stage 04 host diagnostic passed 51/51. The historical `p1` prompt versions and Dope runner scripts stay unchanged. The live manifest compatibility test accepts this specific owner checkpoint in addition to historical `0.1.x` versions. The diagnostic does not close P10 or qualify `1.0.0`.
+
 ## Files and constraints
 
 - `scripts/codex-phase-core.mjs`, `scripts/codex-phase.mjs`, `scripts/validate-codex-phase.mjs` copied without modification.
