@@ -11,7 +11,7 @@
 5. Never claim task completion from passing tests alone if original requirements are unverified or failed.
 6. Never treat a whole-host read-only mount as least-privilege confidentiality confinement.
 7. Never weaken or silently alter existing supervisor triggers; never create continuous idle inference.
-8. Never run an unapproved Codex implementation stack, auto-close manual Pi/MCP qualification, or publish `1.0.0` as a side effect of document application.
+8. Never run an unapproved Codex implementation stack (including superseded fixed-version P1 prompts), auto-close manual Pi/MCP qualification, or publish `1.0.0` as a side effect of document application.
 9. Never conflate `llm-zone` formal benchmarking with Pi Sitter's independent release qualification.
 
 ## 1.0 required evidence matrix
